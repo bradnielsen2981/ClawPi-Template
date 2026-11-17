@@ -1,0 +1,17 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python (ROS 2): current file",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "python": "/usr/bin/python3",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "envFile": "${workspaceFolder}/.vscode/ros.env",
+            "preLaunchTask": "ros-env",
+            "justMyCode": true
+        }
+    ]
+}

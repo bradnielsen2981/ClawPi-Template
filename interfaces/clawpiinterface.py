@@ -663,6 +663,7 @@ if __name__ == '__main__':
         print('rpy      :', robot.get_orientation())
         print('odometry :', robot.get_odometry())
 
+'''
         # --- buzzer ---
         step('Beep',
              lambda: robot.beep())
@@ -709,4 +710,5 @@ if __name__ == '__main__':
         print('Happy face')
         robot.show_emotion('happy')
         time.sleep(3.0)                  # leave it on screen for a while
-        robot.stop_emotion()
+        #robot.stop_emotion()
+'''
