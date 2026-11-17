@@ -37,6 +37,7 @@ Example:
         robot.show_emotion('happy')
         robot.beep()
 """
+import json
 import math
 import os
 import threading
@@ -541,9 +542,25 @@ class ClawPi:
         """Stop the face animation on the LCD screen."""
         self._emotion_pub.publish(String(data='stop'))
 
-    def show_lcd_text(self, text):
-        """Show a line of text on the LCD screen."""
-        self._lcd_text_pub.publish(String(data=str(text)))
+    def show_lcd_text(self, text, emotion='happy', duration=6.0):
+        """Show a line of text on the LCD screen, over a face animation.
+
+        The LCD service only draws text as a caption on top of a playing face;
+        text sent with no face playing is silently held back. So this starts
+        the given face first, looping for `duration` seconds, then sends the
+        text for the same time.
+
+        emotion: one of EMOTIONS to play behind the text.
+        duration: seconds to keep the face and text on screen.
+        """
+        if emotion not in EMOTIONS:
+            raise ValueError(f'emotion must be one of {", ".join(EMOTIONS)}')
+        duration = float(duration)
+        self._emotion_pub.publish(String(data=json.dumps(
+            {'emotion': emotion, 'loop_count': 0, 'duration_seconds': duration})))
+        time.sleep(0.3)  # let the face start, or the text is deferred
+        self._lcd_text_pub.publish(String(data=json.dumps(
+            {'text': str(text), 'duration_seconds': duration})))
 
     # ------------------------------------------------------------------ #
     # LEDs, buzzer
