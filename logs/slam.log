@@ -1,0 +1,10 @@
+[INFO] [launch]: All log files can be found below /root/.ros/log/2026-11-10-11-34-46-735701-raspberrypi-454487
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [sync_slam_toolbox_node-1]: process started with pid [454495]
+[sync_slam_toolbox_node-1] [INFO] [1794310487.038002981] [slam_toolbox]: Node using stack size 40000000
+[sync_slam_toolbox_node-1] [INFO] [1794310487.197263223] [slam_toolbox]: Using solver plugin solver_plugins::CeresSolver
+[sync_slam_toolbox_node-1] [INFO] [1794310487.197560499] [slam_toolbox]: CeresSolver: Using SCHUR_JACOBI preconditioner.
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[INFO] [sync_slam_toolbox_node-1]: sending signal 'SIGINT' to process[sync_slam_toolbox_node-1]
+[sync_slam_toolbox_node-1] [INFO] [1794310536.649480619] [rclcpp]: signal_handler(signum=2)
+[INFO] [sync_slam_toolbox_node-1]: process has finished cleanly [pid 454495]

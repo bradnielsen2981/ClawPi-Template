@@ -1,0 +1,164 @@
+# Use Control + K and Control + 0 to minimise function names
+
+from flask import *
+from interfaces.databaseinterface import Database
+from template.interfaces.hashinginterface import *
+from robot import Robot
+import logging, time, sys, os, signal
+
+#---SETUP LOGGING------------------------------------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+logging.basicConfig(
+    filename=os.path.join(LOG_DIR, "flask.log"),
+    filemode="w",  # Clear the log each time the app starts
+    level=logging.INFO
+)
+
+#---CONFIGURE APP---------------------------------------------------
+app = Flask(__name__)
+sys.tracebacklimit = 10
+app.config['SECRET_KEY'] = "Type in a secret line of text"
+
+#---EMBED OBJECTS---------------------------------------------------
+DATABASE = Database("databases/test.db", app.logger)
+ROBOT = None
+
+#---VIEW FUNCTIONS----------------------------------------------------
+# Backdoor
+@app.route('/backdoor')
+def backdoor():
+    if DATABASE:
+        results = DATABASE.ViewQuery("SELECT * FROM users")
+    return jsonify(results)
+
+# Login as the admin user
+@app.route('/', methods=["GET","POST"])
+def login():
+    if 'userid' in session:
+        return redirect('/mission')
+    app.logger.info("Login")
+    if request.method == "POST":
+        email = request.form['email']
+        password = request.form['password']
+        if email == 'admin@admin' and password == 'admin': 
+            session['userid'] = 1
+            session['permission'] = 'admin'
+            return redirect('./mission') #takes 3 seconds for the CAMERA to start
+    return render_template("login.html")
+
+# Dashboard for the robot
+@app.route('/mission', methods=['GET','POST'])
+def mission():
+    if not 'userid' in session:
+        return redirect('/')
+    loaded = 0
+    if ROBOT:
+        loaded = 1
+    return render_template('mission.html', robot_loaded=loaded)
+
+# load the robot
+@app.route('/load_robot', methods=['GET','POST'])
+def load_robot():
+    global ROBOT
+    if not ROBOT:
+        app.logger.info('Loading Robot')
+        ROBOT = Robot(DATABASE)
+        time.sleep(3) #takes 3 seconds to load the robot
+        ROBOT.SOUND.say("Hello my name is Wally")
+    return jsonify({'message':'robot loaded'})
+
+# YOUR FLASK CODE------------------------------------------------------------------------
+
+# Look Down
+@app.route('/look_down', methods=['GET','POST'])
+def look_down():
+    app.logger.info('Looking Down')
+    if ROBOT:
+        ROBOT.SOUND.say("Looking Down")
+    return jsonify({'message':'look down'})
+
+# Stop
+@app.route('/stop', methods=['GET','POST'])
+def stop():
+    app.logger.info('stopping robot')
+    if ROBOT:
+        ROBOT.stop_command()
+        ROBOT.stop()
+    return jsonify({'message':'stop'})
+
+
+# CAMERA CODE-(do not touch this!!)-------------------------------------------------------
+
+# Continually gets the frame from the pi camera
+def videostream(camera):
+    """Video streaming generator function. Ends the stream when the camera stops."""
+    # camera is kept locally so shutdown_robot() setting ROBOT = None can't crash the stream
+    while camera.status == "Running":
+        frame = camera.get_jpeg_frame() #can change quality to test efficiency
+        if not frame:
+            break
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+
+# Embeds the videofeed by returning a continual stream as above
+@app.route('/videofeed')
+def videofeed():
+    """Video streaming route. Put this in the src attribute of an img tag."""
+    robot = ROBOT
+    if not robot:
+        return '', 204
+    return Response(videostream(robot.CAMERA), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+# Turn on detection mode
+@app.route('/turn_on_detection', methods=['GET','POST'])
+def turn_on_detection():
+    app.logger.info('turn on detection')
+    if ROBOT:
+        ROBOT.CAMERA.detect_all()
+    return jsonify({'message':'Detection mode on!!'})
+
+# Turn off detection mode
+@app.route('/turn_off_detection', methods=['GET','POST'])
+def turn_off_detection():
+    app.logger.info('turn off detection')
+    if ROBOT:
+        ROBOT.CAMERA.end_detection()
+    return jsonify({'message':'Detection mode off!!'})
+
+# Log out
+@app.route('/logout')
+def logout():
+    app.logger.info('logging off')
+    session.clear()
+    return redirect('/')
+
+# Shut down the robot
+@app.route('/shutdown_robot', methods=['GET','POST'])
+def shutdown_robot():
+    app.logger.info("Shutting down robot")
+    global ROBOT
+    if ROBOT:
+        ROBOT.shutdown() # stops motors, mapping, lidar and camera, then releases the ROS connection
+        time.sleep(0.5)
+        ROBOT.SOUND.say("Goodbye")
+        ROBOT = None
+    return jsonify({'message':'Shutting Down'})
+
+# Exit the web server
+@app.route('/exit', methods=['GET','POST'])
+def exit_app():
+    app.logger.info("Exiting")
+    shutdown_robot()
+    # Safely sends an interrupt signal to the current process
+    os.kill(os.getpid(), signal.SIGINT)
+    return jsonify({'message':'Exiting'})
+
+#---------------------------------------------------------------------------
+# main method called web server application
+if __name__ == '__main__':
+    # CRITICAL: use_reloader=False prevents Flask from spawning a second process 
+    # which crashes the robot's hardware GPIO and Camera connections.
+    app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)
