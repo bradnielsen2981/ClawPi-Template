@@ -644,21 +644,69 @@ class ClawPi:
 
 
 if __name__ == '__main__':
-    # Quick self-test: read sensors, move the servos, beep. Does not drive.
+    # Self-test: read sensors, move the servos, beep, then run a driving
+    # sequence. The robot WILL drive - give it about 1 m of clear space.
+    #
+    # Movement calls block until finished and stop the robot themselves, so
+    # the only extra wait needed is the 1 s pause between commands.
     with ClawPi() as robot:
+        def step(label, action):
+            """Show label on the LCD + console, run action, then pause 1 s."""
+            print(label)
+            robot.show_lcd_text(label)
+            action()
+            robot.stop()
+            time.sleep(1.0)
+
         print('battery  :', robot.get_battery_voltage(), 'V')
         print('imu      :', robot.get_imu_sensor())
         print('rpy      :', robot.get_orientation())
         print('odometry :', robot.get_odometry())
+
+        # --- buzzer ---
+        step('Beep',
+             lambda: robot.beep())
+
+        # --- servos ---
+        step('Reset pose',
+             lambda: robot.reset_pose())
+        step('Lift claw',
+             lambda: robot.lift_claw())
+        step('Close claw',
+             lambda: robot.close_claw())
+        step('Open claw',
+             lambda: robot.open_claw())
+        step('Lower claw',
+             lambda: robot.lower_claw())
+        step('Camera pan +30',
+             lambda: robot.set_camera_pan(30, wait=True))
+        step('Camera pan -30',
+             lambda: robot.set_camera_pan(-30, wait=True))
+        step('Camera home',
+             lambda: robot.home_camera(wait=True))
+
+        # --- driving ---
+        step('Forward 2s',
+             lambda: robot.move_forward(2))
+        step('Rotate 2s',
+             lambda: robot.rotate(2, 'clockwise'))
+        step('Rotate 90 deg',
+             lambda: robot.rotate_degrees(90))          # + = anticlockwise
+        step('Diagonal 2s',
+             lambda: robot.move_diagonal(2, forward=True, left=True))
+        # Steering: forward speed + turn rate = drive along an arc (left).
+        step('Steer 2s',
+             lambda: robot.move(2, linear_x=0.2, angular_z=0.5))
+        # Orbiting: strafe + turn so the robot stays facing a point
+        # r = 0.3 m in front of it (angular_z = -linear_y / r).
+        step('Orbit 2s',
+             lambda: robot.move(2, linear_y=0.15, angular_z=-0.15 / 0.3))
+
+        step('Test done',
+             lambda: None)
+
+        # --- LCD face: last, so nothing overwrites it ---
+        print('Happy face')
         robot.show_emotion('happy')
-        robot.beep()
-        robot.reset_pose()
-        robot.lift_claw()
-        robot.close_claw()
-        robot.open_claw()
-        robot.lower_claw()
-        robot.set_camera_pan(30, wait=True)
-        robot.set_camera_pan(-30, wait=True)
-        robot.home_camera(wait=True)
-        #robot.rotate_degrees(90)
+        time.sleep(3.0)                  # leave it on screen for a while
         robot.stop_emotion()
