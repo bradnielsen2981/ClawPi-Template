@@ -1,31 +1,44 @@
 #!/usr/bin/env python3
 # encoding: utf-8
 """
-mentorpiinterface.py - simple Python API for the Hiwonder MentorPi (mecanum).
+clawpiinterface.py - simple Python API for the Hiwonder ClawPi (mecanum + claw).
 
 Talks to the robot through the ROS 2 topics published by the stock bringup
-(ros_robot_controller, odom_publisher, imu filter), so the bringup must
-already be running. The camera is handled by camerainterface.py and the
-lidar by lidarinterface.py.
-Run scripts inside the MentorPi container
-with the ROS environment sourced, e.g.
+(ros_robot_controller, odom_publisher, imu filter, emotion_to_lcd), so the
+bringup must already be running (it starts automatically on boot). The camera
+is handled by camerainterface.py and the lidar by lidarinterface.py.
 
-    docker exec -it -u ubuntu MentorPi zsh
-    cd ~/shared/MentorPiTemplate && python3 my_script.py
+Run scripts inside the ClawPi container as the ubuntu user (running as root
+cannot see the robot's sensor data), with the ROS environment sourced, e.g.
+
+    docker exec -it -u ubuntu <container-name> zsh
+    cd ~/shared/clawpitemplate && python3 my_script.py
+
+The ClawPi has four PWM servos (pulse width in microseconds):
+
+    1  camera tilt   (gimbal pitch)
+    2  camera pan    (gimbal yaw)
+    3  claw lift     (raises / lowers the claw)
+    4  claw grip     (opens / closes the claw)
+
+Servo calibration offsets (software/Servo_upper_computer/servo_config.yaml) are
+applied by the controller board itself, so this file sends plain pulses.
 
 Example:
 
-    from interfaces.mentorpiinterface import MentorPi
+    from interfaces.clawpiinterface import ClawPi
 
-    with MentorPi() as robot:
+    with ClawPi() as robot:
         robot.move_forward(2)                    # 2 s forward
         robot.move_sideways(1, 'left')           # 1 s strafe left
         robot.rotate(1.5, 'clockwise')
-        print(robot.get_imu_sensor())
-        robot.turn_on_led(0, 255, 0)
+        robot.pick_up()                          # close claw, then lift
+        robot.put_down()                         # lower, then open claw
+        robot.show_emotion('happy')
         robot.beep()
 """
 import math
+import os
 import threading
 import time
 
@@ -37,19 +50,18 @@ from rclpy.qos import qos_profile_sensor_data
 from geometry_msgs.msg import Twist, Vector3Stamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
-from std_msgs.msg import UInt16
+from std_msgs.msg import String, UInt16
 from ros_robot_controller_msgs.msg import (
-    BuzzerState, ButtonState, LedState, MotorState, MotorsState, OLEDState,
+    BuzzerState, ButtonState, LedState, MotorState, MotorsState,
     PWMServoState, RGBState, RGBStates, SetPWMServoState
 )
 
-# Topics provided by the stock MentorPi bringup.
+# Topics provided by the stock ClawPi bringup.
 CMD_VEL_TOPIC = '/controller/cmd_vel'
 MOTOR_TOPIC = '/ros_robot_controller/set_motor'
 RGB_TOPIC = '/ros_robot_controller/set_rgb'
 LED_TOPIC = '/ros_robot_controller/set_led'
 BUZZER_TOPIC = '/ros_robot_controller/set_buzzer'
-OLED_TOPIC = '/ros_robot_controller/set_oled'
 PWM_SERVO_TOPIC = '/ros_robot_controller/pwm_servo/set_state'
 BATTERY_TOPIC = '/ros_robot_controller/battery'
 BUTTON_TOPIC = '/ros_robot_controller/button'
@@ -57,13 +69,41 @@ IMU_TOPIC = '/imu'                      # calibrated + complementary filtered
 IMU_RAW_TOPIC = '/ros_robot_controller/imu_raw'
 IMU_RPY_TOPIC = '/imu/rpy/filtered'
 ODOM_TOPIC = '/odom'                    # EKF fused odometry
+LCD_EMOTION_TOPIC = '/lcd_display/emotion'
+LCD_TEXT_TOPIC = '/lcd_display/emotion_text'
+BATTERY_FILE = '/home/ubuntu/shared/battery.txt'  # written by the driver every 5 s
 
-# Camera gimbal PWM servos (pulse width in microseconds, 1500 = centre).
+# PWM servo IDs.
 CAMERA_TILT_SERVO_ID = 1
 CAMERA_PAN_SERVO_ID = 2
+CLAW_LIFT_SERVO_ID = 3
+CLAW_GRIP_SERVO_ID = 4
+
+# Safe pulse range for each servo, from the stock
+# driver/servo_controller/config/servo_controller.yaml.
 SERVO_CENTER = 1500
-SERVO_MIN = 500
-SERVO_MAX = 2500
+SERVO_LIMITS = {
+    CAMERA_TILT_SERVO_ID: (1000, 2400),
+    CAMERA_PAN_SERVO_ID: (500, 2500),
+    CLAW_LIFT_SERVO_ID: (1200, 2200),
+    CLAW_GRIP_SERVO_ID: (1500, 2500),
+}
+DEFAULT_SERVO_LIMITS = (500, 2500)
+
+# Positions used by Hiwonder's own pick-up demos
+# (example/navigation_transport/automatic_pick.py).
+CAMERA_TILT_HOME = 1200
+CAMERA_PAN_HOME = 1500
+CLAW_LIFT_DOWN = 1200
+CLAW_LIFT_UP = 1800
+CLAW_CLOSED = 1700
+CLAW_OPEN = 2200
+
+# LCD face animations (lcd_display_pkg/config/emotions.yaml).
+EMOTIONS = (
+    'wink', 'proud', 'evil', 'dissatisfied', 'playful', 'money', 'happy',
+    'sad', 'tsundere', 'cute', 'wronged', 'awkward', 'crying',
+)
 
 # Safety limits for velocity commands.
 MAX_LINEAR_SPEED = 0.4    # m/s
@@ -82,15 +122,16 @@ def _quaternion_to_rpy(q):
     return roll, pitch, yaw
 
 
-class MentorPi:
-    """High level interface to the MentorPi robot.
+class ClawPi:
+    """High level interface to the ClawPi robot.
 
     Movement functions block for the requested time and then stop the robot.
+    Servo functions are non-blocking unless wait=True is passed.
     Sensor getters return the most recent message received (or None if no
     data has arrived yet).
     """
 
-    def __init__(self, node_name='mentorpi_interface', default_speed=0.2,
+    def __init__(self, node_name='clawpi_interface', default_speed=0.2,
                  default_turn_speed=1.0):
         self.default_speed = default_speed
         self.default_turn_speed = default_turn_speed
@@ -104,6 +145,7 @@ class MentorPi:
         self._latest = {}
         self._events = {}
         self._button_callbacks = []
+        self._servo_positions = {}  # last pulse sent to each servo
 
         # Publishers
         self._cmd_vel_pub = self.node.create_publisher(Twist, CMD_VEL_TOPIC, 1)
@@ -111,8 +153,9 @@ class MentorPi:
         self._rgb_pub = self.node.create_publisher(RGBStates, RGB_TOPIC, 10)
         self._led_pub = self.node.create_publisher(LedState, LED_TOPIC, 10)
         self._buzzer_pub = self.node.create_publisher(BuzzerState, BUZZER_TOPIC, 10)
-        self._oled_pub = self.node.create_publisher(OLEDState, OLED_TOPIC, 10)
         self._servo_pub = self.node.create_publisher(SetPWMServoState, PWM_SERVO_TOPIC, 10)
+        self._emotion_pub = self.node.create_publisher(String, LCD_EMOTION_TOPIC, 10)
+        self._lcd_text_pub = self.node.create_publisher(String, LCD_TEXT_TOPIC, 10)
 
         # Subscribers: just cache the latest message of each.
         self._subscribe('imu', Imu, IMU_TOPIC)
@@ -185,7 +228,7 @@ class MentorPi:
             return self._latest.get(key)
 
     # ------------------------------------------------------------------ #
-    # Movement
+    # Movement (mecanum chassis)
     # ------------------------------------------------------------------ #
     def set_velocity(self, linear_x=0.0, linear_y=0.0, angular_z=0.0):
         """Send a single velocity command (non-blocking).
@@ -362,47 +405,163 @@ class MentorPi:
         return _quaternion_to_rpy(msg.pose.pose.orientation)[2]
 
     # ------------------------------------------------------------------ #
-    # Servos / camera gimbal
+    # Servos (generic)
     # ------------------------------------------------------------------ #
-    def set_servo(self, servo_id, pulse, duration=0.5):
-        """Move a PWM servo to pulse (500-2500 us, 1500 = centre)."""
-        state = PWMServoState()
-        state.id = [int(servo_id)]
-        state.position = [int(_clamp(pulse, SERVO_MIN, SERVO_MAX))]
+    def set_servos(self, positions, duration=0.5, wait=False):
+        """Move several PWM servos together.
+
+        positions: {servo_id: pulse_us, ...}. Each pulse is clamped to that
+                   servo's safe range (see SERVO_LIMITS).
+        duration: seconds the move should take.
+        wait: if True, block until the move has had time to finish.
+        """
         msg = SetPWMServoState()
-        msg.state = [state]
         msg.duration = float(duration)
+        for servo_id, pulse in positions.items():
+            low, high = SERVO_LIMITS.get(int(servo_id), DEFAULT_SERVO_LIMITS)
+            pulse = int(_clamp(pulse, low, high))
+            state = PWMServoState()
+            state.id = [int(servo_id)]
+            state.position = [pulse]
+            msg.state.append(state)
+            self._servo_positions[int(servo_id)] = pulse
         self._servo_pub.publish(msg)
+        if wait:
+            time.sleep(duration)
 
-    def set_servo_angle(self, servo_id, angle, duration=0.5):
-        """Move a PWM servo to angle in degrees (-90..90, 0 = centre)."""
+    def set_servo(self, servo_id, pulse, duration=0.5, wait=False):
+        """Move one PWM servo to pulse (microseconds, 1500 = centre)."""
+        self.set_servos({servo_id: pulse}, duration, wait)
+
+    def set_servo_angle(self, servo_id, angle, duration=0.5, wait=False):
+        """Move a PWM servo to angle in degrees (-90..90, 0 = 1500 us centre).
+
+        The result is still clamped to the servo's safe range, so some servos
+        cannot reach the full -90..90.
+        """
         angle = _clamp(angle, -90, 90)
-        self.set_servo(servo_id, SERVO_CENTER + angle / 90.0 * 1000, duration)
+        self.set_servo(servo_id, SERVO_CENTER + angle / 90.0 * 1000, duration, wait)
 
-    def set_camera_pan(self, angle, duration=0.5):
-        """Pan the camera gimbal left/right (degrees, 0 = centre)."""
-        self.set_servo_angle(CAMERA_PAN_SERVO_ID, angle, duration)
+    def get_servo_position(self, servo_id):
+        """Return the last pulse this interface sent to servo_id, or None.
 
-    def set_camera_tilt(self, angle, duration=0.5):
-        """Tilt the camera gimbal up/down (degrees, 0 = centre)."""
-        self.set_servo_angle(CAMERA_TILT_SERVO_ID, angle, duration)
-
-    def center_camera(self, duration=0.5):
-        """Return the camera gimbal to its centre position."""
-        self.set_servo(CAMERA_TILT_SERVO_ID, SERVO_CENTER, duration)
-        self.set_servo(CAMERA_PAN_SERVO_ID, SERVO_CENTER, duration)
+        This is what was commanded, not a reading from the servo.
+        """
+        return self._servo_positions.get(int(servo_id))
 
     # ------------------------------------------------------------------ #
-    # LEDs, buzzer, OLED
+    # Camera gimbal
+    # ------------------------------------------------------------------ #
+    def set_camera_pan(self, angle, duration=0.5, wait=False):
+        """Pan the camera left/right (degrees, 0 = centre)."""
+        self.set_servo_angle(CAMERA_PAN_SERVO_ID, angle, duration, wait)
+
+    def set_camera_tilt(self, angle, duration=0.5, wait=False):
+        """Tilt the camera up/down (degrees, 0 = 1500 us centre)."""
+        self.set_servo_angle(CAMERA_TILT_SERVO_ID, angle, duration, wait)
+
+    def center_camera(self, duration=0.5, wait=False):
+        """Point the camera straight ahead (both gimbal servos at 1500 us)."""
+        self.set_servos({CAMERA_TILT_SERVO_ID: SERVO_CENTER,
+                         CAMERA_PAN_SERVO_ID: SERVO_CENTER}, duration, wait)
+
+    def home_camera(self, duration=0.5, wait=False):
+        """Move the camera to Hiwonder's start-up pose (pan centred, tilted)."""
+        self.set_servos({CAMERA_TILT_SERVO_ID: CAMERA_TILT_HOME,
+                         CAMERA_PAN_SERVO_ID: CAMERA_PAN_HOME}, duration, wait)
+
+    # ------------------------------------------------------------------ #
+    # Claw
+    # ------------------------------------------------------------------ #
+    def open_claw(self, duration=0.5, wait=True):
+        """Open the claw fully."""
+        self.set_servo(CLAW_GRIP_SERVO_ID, CLAW_OPEN, duration, wait)
+
+    def close_claw(self, duration=0.5, wait=True):
+        """Close the claw (grip)."""
+        self.set_servo(CLAW_GRIP_SERVO_ID, CLAW_CLOSED, duration, wait)
+
+    def set_claw(self, amount, duration=0.5, wait=True):
+        """Set how far open the claw is: 0.0 = closed, 1.0 = fully open."""
+        amount = _clamp(amount, 0.0, 1.0)
+        self.set_servo(CLAW_GRIP_SERVO_ID,
+                       CLAW_CLOSED + amount * (CLAW_OPEN - CLAW_CLOSED), duration, wait)
+
+    def lift_claw(self, duration=0.5, wait=True):
+        """Raise the claw to its carrying height."""
+        self.set_servo(CLAW_LIFT_SERVO_ID, CLAW_LIFT_UP, duration, wait)
+
+    def lower_claw(self, duration=0.5, wait=True):
+        """Lower the claw to the floor (pick-up height)."""
+        self.set_servo(CLAW_LIFT_SERVO_ID, CLAW_LIFT_DOWN, duration, wait)
+
+    def set_lift(self, amount, duration=0.5, wait=True):
+        """Set the claw height: 0.0 = down (floor), 1.0 = up (carrying)."""
+        amount = _clamp(amount, 0.0, 1.0)
+        self.set_servo(CLAW_LIFT_SERVO_ID,
+                       CLAW_LIFT_DOWN + amount * (CLAW_LIFT_UP - CLAW_LIFT_DOWN), duration, wait)
+
+    def pick_up(self, duration=0.5):
+        """Grab whatever is in front of the claw: lower, close, then lift."""
+        self.lower_claw(duration)
+        self.close_claw(duration)
+        self.lift_claw(duration)
+
+    def put_down(self, duration=0.5):
+        """Release the held object: lower, open, then lift clear."""
+        self.lower_claw(duration)
+        self.open_claw(duration)
+        self.lift_claw(duration)
+
+    def reset_pose(self, duration=0.5, wait=True):
+        """Move every servo to Hiwonder's start-up pose.
+
+        Camera tilted forward and centred, claw down and open.
+        """
+        self.set_servos({
+            CAMERA_TILT_SERVO_ID: CAMERA_TILT_HOME,
+            CAMERA_PAN_SERVO_ID: CAMERA_PAN_HOME,
+            CLAW_LIFT_SERVO_ID: CLAW_LIFT_DOWN,
+            CLAW_GRIP_SERVO_ID: CLAW_OPEN,
+        }, duration, wait)
+
+    # ------------------------------------------------------------------ #
+    # LCD screen
+    # ------------------------------------------------------------------ #
+    def show_emotion(self, emotion='happy'):
+        """Play a face animation on the LCD screen.
+
+        emotion: one of EMOTIONS, e.g. 'happy', 'sad', 'wink', 'cute'.
+        """
+        if emotion not in EMOTIONS:
+            raise ValueError(f'emotion must be one of {", ".join(EMOTIONS)}')
+        self._emotion_pub.publish(String(data=emotion))
+
+    def stop_emotion(self):
+        """Stop the face animation on the LCD screen."""
+        self._emotion_pub.publish(String(data='stop'))
+
+    def show_lcd_text(self, text):
+        """Show a line of text on the LCD screen."""
+        self._lcd_text_pub.publish(String(data=str(text)))
+
+    # ------------------------------------------------------------------ #
+    # LEDs, buzzer
     # ------------------------------------------------------------------ #
     def set_rgb_led(self, index, red, green, blue):
-        """Set one RGB LED on the controller board (index 1 or 2)."""
+        """Set one RGB LED on the controller board (index 1 or 2).
+
+        Not yet tested on the ClawPi board; may have no visible effect.
+        """
         msg = RGBStates()
         msg.states = [RGBState(index=int(index), red=int(red), green=int(green), blue=int(blue))]
         self._rgb_pub.publish(msg)
 
     def turn_on_led(self, red=255, green=255, blue=255, index=None):
-        """Turn on the RGB LEDs. index=None sets both LEDs."""
+        """Turn on the RGB LEDs. index=None sets both LEDs.
+
+        Not yet tested on the ClawPi board; may have no visible effect.
+        """
         indices = [1, 2] if index is None else [index]
         msg = RGBStates()
         msg.states = [RGBState(index=i, red=int(red), green=int(green), blue=int(blue))
@@ -414,7 +573,7 @@ class MentorPi:
         self.turn_on_led(0, 0, 0, index)
 
     def blink_status_led(self, on_time=0.2, off_time=0.2, repeat=3, led_id=1):
-        """Blink the single-colour status LED on the controller board."""
+        """Blink a single-colour status LED on the controller board (id 1 or 2)."""
         msg = LedState()
         msg.id = int(led_id)
         msg.on_time = float(on_time)
@@ -431,20 +590,25 @@ class MentorPi:
         msg.repeat = int(repeat)
         self._buzzer_pub.publish(msg)
 
-    def set_oled_text(self, line, text):
-        """Write text to a line of the OLED display (if fitted)."""
-        msg = OLEDState()
-        msg.index = int(line)
-        msg.text = str(text)
-        self._oled_pub.publish(msg)
-
     # ------------------------------------------------------------------ #
     # Battery / button
     # ------------------------------------------------------------------ #
     def get_battery_voltage(self, timeout=3.0):
-        """Return the battery voltage in volts, or None."""
+        """Return the battery voltage in volts, or None.
+
+        The board reports about once a second. If no report arrives in time,
+        falls back to the value the driver saves to BATTERY_FILE (if recent).
+        """
         msg = self._get('battery', timeout)
-        return None if msg is None else msg.data / 1000.0
+        if msg is not None:
+            return msg.data / 1000.0
+        try:
+            if time.time() - os.path.getmtime(BATTERY_FILE) < 30:
+                with open(BATTERY_FILE) as f:
+                    return int(f.read().strip()) / 1000.0
+        except (OSError, ValueError):
+            pass
+        return None
 
     def get_button(self, timeout=0.0):
         """Return the last button event as (button_id, state), or None.
@@ -480,15 +644,21 @@ class MentorPi:
 
 
 if __name__ == '__main__':
-    # Quick self-test: read sensors, flash LEDs, beep. Does not move.
-    with MentorPi() as robot:
+    # Quick self-test: read sensors, move the servos, beep. Does not drive.
+    with ClawPi() as robot:
         print('battery  :', robot.get_battery_voltage(), 'V')
         print('imu      :', robot.get_imu_sensor())
         print('rpy      :', robot.get_orientation())
         print('odometry :', robot.get_odometry())
-        robot.turn_on_led(0, 0, 255)
+        robot.show_emotion('happy')
         robot.beep()
-        #robot.move_forward(2)
-        robot.rotate_degrees(90)
-        robot.turn_off_led()
-        time.sleep(1)
+        robot.reset_pose()
+        robot.lift_claw()
+        robot.close_claw()
+        robot.open_claw()
+        robot.lower_claw()
+        robot.set_camera_pan(30, wait=True)
+        robot.set_camera_pan(-30, wait=True)
+        robot.home_camera(wait=True)
+        #robot.rotate_degrees(90)
+        robot.stop_emotion()

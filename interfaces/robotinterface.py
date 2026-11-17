@@ -7,7 +7,7 @@ import cv2
 
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
-from mentorpiinterface import MentorPi
+from clawpiinterface import ClawPi
 from soundinterface import SoundInterface
 from camerainterface import CameraInterface
 from lidarinterface import LidarInterface
@@ -24,7 +24,7 @@ LED_COLOURS = {
 DRIVE_SPEED = 0.15 # m/s
 TURN_SPEED = 0.5   # rad/s
 
-class RobotInterface(MentorPi):
+class RobotInterface(ClawPi):
 
     def __init__(self):
         """

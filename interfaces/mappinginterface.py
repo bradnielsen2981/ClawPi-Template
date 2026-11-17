@@ -69,7 +69,7 @@ class MappingInterface():
             lidar (LidarInterface, optional): An existing lidar interface to use. If None, one is created.
             camera (CameraInterface, optional): An existing camera interface to use (e.g. ROBOT.CAMERA). If None
                                                 and use_camera is True, one is created and started.
-            node (rclpy.node.Node, optional): An existing ROS node to share (e.g. MentorPi().node, which is
+            node (rclpy.node.Node, optional): An existing ROS node to share (e.g. ClawPi().node, which is
                                               already being spun). If None, mapping creates and spins its own,
                                               and shares it with the lidar and camera it creates.
             use_camera (bool, optional): Needed for object tagging. Defaults to True.
@@ -115,7 +115,7 @@ class MappingInterface():
                     rclpy.init()
                     self._owns_rclpy = True
                 self.node = Node('mapping_interface')
-                self._executor = MultiThreadedExecutor() # Same setup as MentorPi, so the node can be shared either way
+                self._executor = MultiThreadedExecutor() # Same setup as ClawPi, so the node can be shared either way
                 self._executor.add_node(self.node)
                 self._spin_thread = threading.Thread(target=self._executor.spin, daemon=True)
                 self._spin_thread.start()

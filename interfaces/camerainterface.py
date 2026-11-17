@@ -84,7 +84,7 @@ class CameraInterface():
 
         Args:
             timelimit (int, optional): General timelimit setting. Defaults to 20.
-            node (rclpy.node.Node, optional): An existing ROS node to share (e.g. MentorPi().node, which is
+            node (rclpy.node.Node, optional): An existing ROS node to share (e.g. ClawPi().node, which is
                                               already being spun). If None, the camera creates and spins its own.
             use_depth (bool, optional): Subscribe to the depth picture so detections include distances. Defaults to True.
         """

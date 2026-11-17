@@ -48,7 +48,7 @@ class LidarInterface():
 
         Args:
             timelimit (int, optional): General timelimit setting. Defaults to 20.
-            node (rclpy.node.Node, optional): An existing ROS node to share (e.g. MentorPi().node, which is
+            node (rclpy.node.Node, optional): An existing ROS node to share (e.g. ClawPi().node, which is
                                               already being spun). If None, the lidar creates and spins its own.
         """
         self.timelimit = timelimit
