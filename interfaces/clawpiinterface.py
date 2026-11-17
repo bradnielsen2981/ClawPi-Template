@@ -663,20 +663,21 @@ if __name__ == '__main__':
         print('rpy      :', robot.get_orientation())
         print('odometry :', robot.get_odometry())
 
-'''
+        input("Press Enter to test...")
+
         # --- buzzer ---
         step('Beep',
              lambda: robot.beep())
-
+ 
         # --- servos ---
         step('Reset pose',
              lambda: robot.reset_pose())
         step('Lift claw',
              lambda: robot.lift_claw())
-        step('Close claw',
-             lambda: robot.close_claw())
         step('Open claw',
              lambda: robot.open_claw())
+        step('Close claw',
+             lambda: robot.close_claw())
         step('Lower claw',
              lambda: robot.lower_claw())
         step('Camera pan +30',
@@ -711,4 +712,3 @@ if __name__ == '__main__':
         robot.show_emotion('happy')
         time.sleep(3.0)                  # leave it on screen for a while
         #robot.stop_emotion()
-'''
