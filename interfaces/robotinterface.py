@@ -8,7 +8,7 @@ import cv2
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 from clawpiinterface import ClawPi
-from soundinterface import SoundInterface
+from interfaces.soundinterface_old import SoundInterface
 from camerainterface import CameraInterface
 from lidarinterface import LidarInterface
 from mappinginterface import MappingInterface
@@ -64,7 +64,7 @@ class RobotInterface(ClawPi):
         lidar = self.LIDAR
         with self._interface_lock:
             if self._mapping is None:
-                self._mapping = MappingInterface(lidar=lidar, camera=self.CAMERA, node=self.node)
+                self._mapping = MappingInterface(lidar=lidar, camera=self.CAMERA, node=self.node, robot=self)
             return self._mapping
 
     # Lidar shortcuts, so robot.get_distance_ahead() works without going through robot.LIDAR

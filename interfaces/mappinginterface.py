@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 #!/usr/bin/env python3
-# Mapping interface for the Hiwonder MentorPi.
-# Builds a map with Hiwonder's SLAM setup (ros2_ws/src/slam) running in the background while the robot drives
-# around. Two methods are available:
-#   'slam_toolbox' - 2D lidar SLAM (fast, works in the dark)
-#   'rtabmap'      - depth camera + lidar SLAM (better at recognising places it has seen before)
-# The map can be read as a picture, followed with get_pose() and saved for Nav2.
-# Object tagging uses the camera: things it detects (YOLOv5 objects or colours) are placed on the map using
-# their depth distance and the robot's position, so the map remembers where e.g. the chair is.
-# Angles are in degrees, distances in metres. Run inside the MentorPi container, where ROS 2 is available.
+# Mapping interface for the Hiwonder ClawPi.
+# Builds a map with Hiwonder's SLAM setup (ros2_ws/src/slam, slam_toolbox on the /scan_raw lidar) running in the
+# background while the robot drives around. The map can be read as a picture, followed with get_pose() and
+# saved for Nav2.
+# Object tagging uses the camera: things it detects (YOLOv5 objects or colours) are placed on the map, so the
+# map remembers where e.g. the chair is. The ClawPi's USB camera has no depth, so the distance to each object
+# comes from the lidar (tall things) or from where its bottom edge touches the floor (small things below the
+# lidar). The camera sits on the pan/tilt gimbal, so its direction is read from TF every time.
+# Angles are in degrees, distances in metres. Run inside the ClawPi container, where ROS 2 is available.
 
 import sys, os, time, threading, math, subprocess, signal, atexit, json
 import cv2
@@ -26,20 +26,24 @@ from tf2_ros import Buffer, TransformListener
 
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
-from lidarinterface import LidarInterface, yaw_from_quaternion
+from lidarinterface import LidarInterface, yaw_from_quaternion, angle_difference
 from camerainterface import CameraInterface
+from clawpiinterface import (CAMERA_PAN_SERVO_ID, CAMERA_TILT_SERVO_ID, SERVO_CENTER,
+                             CAMERA_PAN_TRIM, CAMERA_TILT_TRIM)
 
 MAP_TOPIC = '/map'
 # The SLAM programs publish the map once per update and keep the last one for late subscribers
 MAP_QOS = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL, reliability=QoSReliabilityPolicy.RELIABLE)
 MAP_FRAME = 'map'
 BASE_FRAME = 'base_footprint'
-CAMERA_INFO_TOPIC = '/ascamera/camera_publisher/rgb0/camera_info'
+CAMERA_INFO_TOPIC = '/camera_info' # usb_cam's calibration (used if the bringup publishes it)
+CAMERA_FRAME = 'gimbal_pitch_link' # The camera is fixed to the gimbal's tilt link (usb_cam's 'camera' frame is not in TF)
+LIDAR_FRAME = 'lidar_frame'
 
-# Hiwonder's SLAM launches, without the robot bringup (that is already running)
+# Hiwonder's SLAM launch, without the robot bringup (that is already running).
+# ('rtabmap' is not offered: it needs the RGB-D depth camera, which the ClawPi does not have.)
 SLAM_LAUNCH_FILES = {
     'slam_toolbox': '/home/ubuntu/ros2_ws/src/slam/launch/include/slam_base.launch.py',
-    'rtabmap': '/home/ubuntu/ros2_ws/src/slam/launch/include/rtabmap.launch.py',
 }
 
 # Default folders (<project>/static/maps and <project>/logs)
@@ -47,10 +51,14 @@ PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAP_DIR = os.path.join(PROJECT_DIR, 'static', 'maps')
 SLAM_LOG_PATH = os.path.join(PROJECT_DIR, 'logs', 'slam.log')
 
-# Camera geometry, used until the camera's own calibration (camera_info) and position (TF) arrive
+# Camera geometry at 640x480, from Hiwonder's calibration (ros2_ws/src/peripherals/config/camera_info.yaml).
+# Replaced by camera_info if it is published.
 FRAME_WIDTH = 640
-DEFAULT_CAMERA_FOV = 70.0  # Horizontal field of view in degrees
-CAMERA_OFFSET = (0.0, 0.0) # Camera position from the robot's centre in metres (x ahead, y left)
+DEFAULT_CAMERA_FX, DEFAULT_CAMERA_FY = 473.5, 474.2 # Focal length in pixels (about 68 degrees across)
+DEFAULT_CAMERA_CX, DEFAULT_CAMERA_CY = 323.6, 238.6 # Centre of the picture in pixels
+# Camera position on the gimbal from the robot's centre at floor level, from TF (x ahead, y left, z up)
+CAMERA_POSITION = (0.048, 0.0, 0.109)
+LIDAR_POSITION = (-0.032, 0.0) # Same for the lidar (x ahead, y left)
 
 # Colours (BGR) for the pictures
 ROBOT_COLOUR = (0, 200, 0)
@@ -61,11 +69,14 @@ OBJECT_COLOUR = (255, 0, 200)
 # The Mapping Object
 class MappingInterface():
 
-    def __init__(self, lidar=None, camera=None, node=None, use_camera=True):
+    def __init__(self, lidar=None, camera=None, node=None, use_camera=True, robot=None):
         """
         Initializes the Mapping Interface. Uses the lidar and camera interfaces given, or creates its own.
 
         Args:
+            robot (ClawPi, optional): The robot (e.g. ROBOT). Object tagging reads the camera's pan and tilt from it,
+                                      because the gimbal's position is not published in TF. If None, the camera
+                                      is assumed to point straight ahead.
             lidar (LidarInterface, optional): An existing lidar interface to use. If None, one is created.
             camera (CameraInterface, optional): An existing camera interface to use (e.g. ROBOT.CAMERA). If None
                                                 and use_camera is True, one is created and started.
@@ -75,6 +86,7 @@ class MappingInterface():
             use_camera (bool, optional): Needed for object tagging. Defaults to True.
         """
         self.status = "Init"
+        self.robot = robot
         self.method = None
         self.map_msg = None
         self.map_id = 0
@@ -87,13 +99,13 @@ class MappingInterface():
         self.min_sightings = 2          # Sightings needed before an object counts (stops one-off false detections)
         self.max_object_distance = 3.0  # Ignore detections further away than this (depth gets unreliable)
         self.tagging_rate = 0.2         # Seconds between looks at the camera's detections
+        self.lidar_match_angle = 3.0    # Lidar readings this close (degrees) to an object's edges count as hitting it
         self._tagging_thread = None
         self._tagging = False
         self._tagging_tasks = []        # Camera tasks started by tagging, removed again when it stops
-        self._camera_fx = None
-        self._camera_cx = None
-        self._camera_frame = None
-        self._camera_offset = None
+        self._camera_fx, self._camera_fy = DEFAULT_CAMERA_FX, DEFAULT_CAMERA_FY
+        self._camera_cx, self._camera_cy = DEFAULT_CAMERA_CX, DEFAULT_CAMERA_CY
+        self._lidar_position = None
 
         # Thread Locks to prevent data corruption between the main program, the tagging thread and the ROS callbacks
         self.map_lock = threading.Lock()
@@ -149,9 +161,9 @@ class MappingInterface():
     def _camera_info_callback(self, msg):
         """ROS callback: keeps the camera's focal length and centre, used to turn pixels into directions."""
         scale = FRAME_WIDTH / msg.width if msg.width else 1.0
-        if msg.k[0] > 0:
+        if msg.k[0] > 0 and msg.k[4] > 0:
             self._camera_fx, self._camera_cx = msg.k[0] * scale, msg.k[2] * scale
-        self._camera_frame = msg.header.frame_id
+            self._camera_fy, self._camera_cy = msg.k[4] * scale, msg.k[5] * scale
 
     #-------------------------------------------
     # Mapping
@@ -161,7 +173,7 @@ class MappingInterface():
         If another program is already mapping, its map is used instead of starting a second one.
 
         Args:
-            method (str, optional): 'slam_toolbox' (lidar) or 'rtabmap' (depth camera + lidar). Defaults to 'slam_toolbox'.
+            method (str, optional): 'slam_toolbox' (lidar SLAM, the only method on the ClawPi). Defaults to 'slam_toolbox'.
             timeout (int, optional): Seconds to wait for the first map. Defaults to 30.
 
         Returns:
@@ -275,7 +287,8 @@ class MappingInterface():
         if self.camera is None or self.camera.status != "Running":
             print("Object tagging needs a running camera")
             return False
-        self.camera.enable_depth()
+        if self.lidar is None or self.lidar.status != "Running":
+            print("No lidar - only objects standing on the floor can be placed on the map")
         if model and "detect_model" not in self.camera.detection_tasks:
             self.camera.add_detection_task("detect_model")
             self._tagging_tasks.append("detect_model")
@@ -315,53 +328,136 @@ class MappingInterface():
                 continue
             data = self.camera.get_detection_data()
 
-            sightings = [] # (label, pixel x, distance in mm)
+            sightings = [] # (label, left pixel, right pixel, bottom pixel) of each detection box
             model = data.get('detect_model', {})
             if model.get('found') and model.get('time') != last_model_time: # Only use each model result once
                 last_model_time = model.get('time')
                 for target in model.get('targets', []):
                     x, y, w, h = target['rect']
-                    sightings.append((target['class'], x + w / 2, target.get('distance')))
+                    sightings.append((target['class'], x, x + w, y + h))
             for colour, found in data.get('detect_colour', {}).items():
-                (x, y), _, _ = found['rect']
-                sightings.append((colour, x, found.get('distance')))
+                corners = cv2.boxPoints(found['rect']) # The colour box can be rotated
+                sightings.append((colour, corners[:, 0].min(), corners[:, 0].max(), corners[:, 1].max()))
 
-            for label, px, distance in sightings:
-                position = self._sighting_to_map(pose, px, distance)
+            if not sightings:
+                continue
+            camera = self._get_camera_pose()
+            points = self._get_lidar_points()
+            for label, left, right, bottom in sightings:
+                position = self._sighting_to_map(pose, camera, points, left, right, bottom)
                 if position is not None:
                     self._add_sighting(label, *position)
 
-    def _sighting_to_map(self, pose, px, distance):
+    def _sighting_to_map(self, pose, camera, points, left, right, bottom):
         """
-        Turns a detection (pixel column and depth distance) into a map position.
+        Works out where a detection box is on the map. Two distance estimates are made:
+          floor - the box's bottom edge is where the object touches the floor; the camera's height and tilt
+                  give how far away that is. Works for small things the lidar passes over.
+          lidar - the nearest lidar reading in the box's direction. More accurate, but only hits things that
+                  reach up to the lidar (about 17 cm high); for smaller things it sees whatever is behind them.
+        The lidar is used unless it is clearly further away than the floor estimate.
+
+        Args:
+            pose (dict): The robot's map position (see get_pose).
+            camera (tuple): (position, rotation) of the camera on the robot (see _get_camera_pose).
+            points (numpy.ndarray): Nx2 lidar points on the robot (x ahead, y left), may be empty.
+            left, right, bottom (float): Edges of the detection box in pixels.
 
         Returns:
-            tuple: (x, y) in metres on the map, or None if the distance is missing or too far.
+            tuple: (x, y) in metres on the map, or None if the object's position can't be worked out or is too far.
         """
-        if distance is None:
-            return None
-        forward = distance / 1000.0 # The depth camera measures straight-ahead distance, not along the line of sight
-        if forward > self.max_object_distance:
-            return None
-        fx = self._camera_fx or (FRAME_WIDTH / 2) / math.tan(math.radians(DEFAULT_CAMERA_FOV / 2))
-        cx = self._camera_cx or FRAME_WIDTH / 2
-        left = -(px - cx) * forward / fx # Pixels right of centre are to the robot's right
+        origin, rotation = camera
 
-        offset_x, offset_y = self._get_camera_offset()
-        rx, ry = forward + offset_x, left + offset_y # Position relative to the robot's centre
-        heading = math.radians(pose['heading'])
+        def ray(px, py):
+            """Direction (x ahead, y left, z up on the robot) of the line of sight through a pixel."""
+            return rotation @ np.array([1.0, (self._camera_cx - px) / self._camera_fx, (self._camera_cy - py) / self._camera_fy])
+
+        floor = None
+        down = ray((left + right) / 2, bottom)
+        # Only if the bottom edge is below the horizon (the line of sight reaches the floor) and is not cut off by
+        # the bottom of the picture (then the real bottom is hidden and the floor estimate is too short)
+        if down[2] < -1e-3 and (bottom < 0.97 * 2 * self._camera_cy or not len(points)):
+            floor = origin[:2] - origin[2] / down[2] * down[:2]
+
+        hit = None
+        if len(points):
+            # Lidar readings between the box's left and right edges, as seen from the camera
+            def bearing(direction):
+                return math.degrees(math.atan2(direction[1], direction[0]))
+            centre = bearing(down)
+            half_width = abs(angle_difference(bearing(ray(left, bottom)), bearing(ray(right, bottom)))) / 2
+            relative = points - origin[:2]
+            bearings = np.degrees(np.arctan2(relative[:, 1], relative[:, 0]))
+            inside = np.abs(angle_difference(bearings, centre)) <= half_width + self.lidar_match_angle
+            if inside.any():
+                distances = np.hypot(relative[inside, 0], relative[inside, 1])
+                hit = points[inside][np.argmin(distances)]
+
+        if hit is not None and (floor is None or np.hypot(*(hit - origin[:2])) <= 1.25 * np.hypot(*(floor - origin[:2]))):
+            rx, ry = hit
+        elif floor is not None:
+            rx, ry = floor
+        else:
+            return None
+        if math.hypot(rx, ry) > self.max_object_distance:
+            return None
+
+        heading = math.radians(pose['heading']) # Robot position -> map position
         return (pose['x'] + rx * math.cos(heading) - ry * math.sin(heading),
                 pose['y'] + rx * math.sin(heading) + ry * math.cos(heading))
 
-    def _get_camera_offset(self):
-        """Where the camera sits on the robot (x ahead, y left), from TF if the bringup publishes it."""
-        if self._camera_offset is None and self._camera_frame:
+    def get_camera_angles(self):
+        """
+        The camera's pan and tilt in degrees (pan + = left, tilt + = up, 0/0 = straight ahead), worked out from
+        the last pulses the robot sent to the gimbal servos. Servos the robot has not moved yet count as 0.
+
+        Returns:
+            tuple: (pan, tilt), or None if no robot was given.
+        """
+        if self.robot is None:
+            return None
+        def angle(servo_id, trim):
+            pulse = self.robot.get_servo_position(servo_id)
+            return 0.0 if pulse is None else (pulse - SERVO_CENTER) / 1000.0 * 90.0 - trim
+        return angle(CAMERA_PAN_SERVO_ID, CAMERA_PAN_TRIM), angle(CAMERA_TILT_SERVO_ID, CAMERA_TILT_TRIM)
+
+    def _get_camera_pose(self):
+        """
+        Where the camera is on the robot and which way it points. Uses the robot's pan/tilt if a robot was given,
+        otherwise TF (which on the ClawPi bringup always shows the gimbal straight ahead).
+
+        Returns:
+            tuple: (position, rotation) - numpy (x, y, z) in metres from the robot's centre at floor level
+                   (x ahead, y left, z up) and a 3x3 rotation matrix from camera directions to robot directions.
+        """
+        angles = self.get_camera_angles()
+        if angles is not None:
+            pan, tilt = math.radians(angles[0]), math.radians(angles[1])
+            turn = np.array([[math.cos(pan), -math.sin(pan), 0], [math.sin(pan), math.cos(pan), 0], [0, 0, 1]])
+            raise_ = np.array([[math.cos(tilt), 0, -math.sin(tilt)], [0, 1, 0], [math.sin(tilt), 0, math.cos(tilt)]])
+            return np.array(CAMERA_POSITION), turn @ raise_
+        try:
+            t = self._tf_buffer.lookup_transform(BASE_FRAME, CAMERA_FRAME, Time(), timeout=Duration(seconds=0.05))
+            p, q = t.transform.translation, t.transform.rotation
+            rotation = np.array([
+                [1 - 2 * (q.y * q.y + q.z * q.z), 2 * (q.x * q.y - q.z * q.w), 2 * (q.x * q.z + q.y * q.w)],
+                [2 * (q.x * q.y + q.z * q.w), 1 - 2 * (q.x * q.x + q.z * q.z), 2 * (q.y * q.z - q.x * q.w)],
+                [2 * (q.x * q.z - q.y * q.w), 2 * (q.y * q.z + q.x * q.w), 1 - 2 * (q.x * q.x + q.y * q.y)]])
+            return np.array([p.x, p.y, p.z]), rotation
+        except Exception:
+            return np.array(CAMERA_POSITION), np.eye(3)
+
+    def _get_lidar_points(self):
+        """The newest lidar scan as Nx2 points on the robot (x ahead, y left from its centre). Empty if there is none."""
+        if self.lidar is None:
+            return np.zeros((0, 2))
+        if self._lidar_position is None:
             try:
-                t = self._tf_buffer.lookup_transform(BASE_FRAME, self._camera_frame, Time(), timeout=Duration(seconds=0.1))
-                self._camera_offset = (t.transform.translation.x, t.transform.translation.y)
+                t = self._tf_buffer.lookup_transform(BASE_FRAME, LIDAR_FRAME, Time(), timeout=Duration(seconds=0.05))
+                self._lidar_position = (t.transform.translation.x, t.transform.translation.y)
             except Exception:
                 pass
-        return self._camera_offset or CAMERA_OFFSET
+        return self.lidar.get_points() + np.array(self._lidar_position or LIDAR_POSITION)
 
     def _add_sighting(self, label, x, y):
         """Merges a sighting into the nearest known object with the same label, or adds a new object."""

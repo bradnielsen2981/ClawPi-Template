@@ -1,10 +1,13 @@
-[INFO] [launch]: All log files can be found below /root/.ros/log/2026-11-10-11-34-46-735701-raspberrypi-454487
+[INFO] [launch]: All log files can be found below /root/.ros/log/2026-11-23-22-51-41-608964-raspberrypi-6950
 [INFO] [launch]: Default logging verbosity is set to INFO
-[INFO] [sync_slam_toolbox_node-1]: process started with pid [454495]
-[sync_slam_toolbox_node-1] [INFO] [1794310487.038002981] [slam_toolbox]: Node using stack size 40000000
-[sync_slam_toolbox_node-1] [INFO] [1794310487.197263223] [slam_toolbox]: Using solver plugin solver_plugins::CeresSolver
-[sync_slam_toolbox_node-1] [INFO] [1794310487.197560499] [slam_toolbox]: CeresSolver: Using SCHUR_JACOBI preconditioner.
+[INFO] [sync_slam_toolbox_node-1]: process started with pid [6964]
+[sync_slam_toolbox_node-1] [INFO] [1795474301.928950167] [slam_toolbox]: Node using stack size 40000000
+[sync_slam_toolbox_node-1] [INFO] [1795474302.567241618] [slam_toolbox]: Using solver plugin solver_plugins::CeresSolver
+[sync_slam_toolbox_node-1] [INFO] [1795474302.568026138] [slam_toolbox]: CeresSolver: Using SCHUR_JACOBI preconditioner.
+[sync_slam_toolbox_node-1] Info: clipped range threshold to be within minimum and maximum range!
+[sync_slam_toolbox_node-1] [WARN] [1795474304.006172448] [slam_toolbox]: maximum laser range setting (12.0 m) exceeds the capabilities of the used Lidar (10.0 m)
+[sync_slam_toolbox_node-1] Registering sensor: [Custom Described Lidar]
 [WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
 [INFO] [sync_slam_toolbox_node-1]: sending signal 'SIGINT' to process[sync_slam_toolbox_node-1]
-[sync_slam_toolbox_node-1] [INFO] [1794310536.649480619] [rclcpp]: signal_handler(signum=2)
-[INFO] [sync_slam_toolbox_node-1]: process has finished cleanly [pid 454495]
+[sync_slam_toolbox_node-1] [INFO] [1795474304.441663456] [rclcpp]: signal_handler(signum=2)
+[INFO] [sync_slam_toolbox_node-1]: process has finished cleanly [pid 6964]

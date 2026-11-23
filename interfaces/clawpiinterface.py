@@ -95,6 +95,13 @@ DEFAULT_SERVO_LIMITS = (500, 2500)
 # (example/navigation_transport/automatic_pick.py).
 CAMERA_TILT_HOME = 1200
 CAMERA_PAN_HOME = 1500
+
+# Extra software trim for the camera gimbal, in degrees, added on top of the
+# board's calibration offsets. With these, pan 0 / tilt 0 points the camera
+# straight ahead. If it is still off, nudge these values (positive pan/tilt
+# moves the camera the same way as set_camera_pan(+x) / set_camera_tilt(+x)).
+CAMERA_PAN_TRIM = 0.0
+CAMERA_TILT_TRIM = 0.0
 CLAW_LIFT_DOWN = 1200
 CLAW_LIFT_UP = 1800
 CLAW_CLOSED = 1700
@@ -453,23 +460,35 @@ class ClawPi:
     # ------------------------------------------------------------------ #
     # Camera gimbal
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _camera_pulse(angle, trim):
+        angle = _clamp(angle + trim, -90, 90)
+        return SERVO_CENTER + angle / 90.0 * 1000
+
+    def set_camera(self, pan=0.0, tilt=0.0, duration=0.5, wait=False):
+        """Point the camera (degrees, 0/0 = straight ahead, trim applied)."""
+        self.set_servos({
+            CAMERA_PAN_SERVO_ID: self._camera_pulse(pan, CAMERA_PAN_TRIM),
+            CAMERA_TILT_SERVO_ID: self._camera_pulse(tilt, CAMERA_TILT_TRIM),
+        }, duration, wait)
+
     def set_camera_pan(self, angle, duration=0.5, wait=False):
-        """Pan the camera left/right (degrees, 0 = centre)."""
-        self.set_servo_angle(CAMERA_PAN_SERVO_ID, angle, duration, wait)
+        """Pan the camera left/right (degrees, 0 = straight ahead)."""
+        self.set_servo(CAMERA_PAN_SERVO_ID,
+                       self._camera_pulse(angle, CAMERA_PAN_TRIM), duration, wait)
 
     def set_camera_tilt(self, angle, duration=0.5, wait=False):
-        """Tilt the camera up/down (degrees, 0 = 1500 us centre)."""
-        self.set_servo_angle(CAMERA_TILT_SERVO_ID, angle, duration, wait)
+        """Tilt the camera up/down (degrees, 0 = level)."""
+        self.set_servo(CAMERA_TILT_SERVO_ID,
+                       self._camera_pulse(angle, CAMERA_TILT_TRIM), duration, wait)
 
     def center_camera(self, duration=0.5, wait=False):
-        """Point the camera straight ahead (both gimbal servos at 1500 us)."""
-        self.set_servos({CAMERA_TILT_SERVO_ID: SERVO_CENTER,
-                         CAMERA_PAN_SERVO_ID: SERVO_CENTER}, duration, wait)
+        """Point the camera straight ahead (pan 0, tilt 0)."""
+        self.set_camera(0, 0, duration, wait)
 
     def home_camera(self, duration=0.5, wait=False):
-        """Move the camera to Hiwonder's start-up pose (pan centred, tilted)."""
-        self.set_servos({CAMERA_TILT_SERVO_ID: CAMERA_TILT_HOME,
-                         CAMERA_PAN_SERVO_ID: CAMERA_PAN_HOME}, duration, wait)
+        """Point the camera straight ahead (same as center_camera)."""
+        self.set_camera(0, 0, duration, wait)
 
     # ------------------------------------------------------------------ #
     # Claw
@@ -687,7 +706,7 @@ if __name__ == '__main__':
              lambda: robot.beep())
  
         # --- servos ---
-        step('Reset pose',
+        '''step('Reset pose',
              lambda: robot.reset_pose())
         step('Lift claw',
              lambda: robot.lift_claw())
@@ -696,14 +715,25 @@ if __name__ == '__main__':
         step('Close claw',
              lambda: robot.close_claw())
         step('Lower claw',
-             lambda: robot.lower_claw())
+             lambda: robot.lower_claw())'''
+        step('Camera home',
+             lambda: robot.home_camera(wait=True))
+        time.sleep(1)
         step('Camera pan +30',
              lambda: robot.set_camera_pan(30, wait=True))
         step('Camera pan -30',
              lambda: robot.set_camera_pan(-30, wait=True))
         step('Camera home',
              lambda: robot.home_camera(wait=True))
-
+        time.sleep(1)
+        step('Camera tilt +30',
+             lambda: robot.set_camera_tilt(30, wait=True))
+        step('Camera tilt -30',
+             lambda: robot.set_camera_tilt(-30, wait=True))
+        step('Camera home',
+             lambda: robot.home_camera(wait=True))
+        time.sleep(1)
+        '''
         # --- driving ---
         step('Forward 2s',
              lambda: robot.move_forward(2))
@@ -729,3 +759,4 @@ if __name__ == '__main__':
         robot.show_emotion('happy')
         time.sleep(3.0)                  # leave it on screen for a while
         #robot.stop_emotion()
+        '''
