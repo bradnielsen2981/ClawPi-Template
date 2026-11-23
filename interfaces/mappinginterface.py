@@ -4,7 +4,7 @@
 # Builds a map with Hiwonder's SLAM setup (ros2_ws/src/slam, slam_toolbox on the /scan_raw lidar) running in the
 # background while the robot drives around. The map can be read as a picture, followed with get_pose() and
 # saved for Nav2.
-# Object tagging uses the camera: things it detects (YOLOv5 objects or colours) are placed on the map, so the
+# Object tagging uses the camera: things it detects (YOLO26 objects or colours) are placed on the map, so the
 # map remembers where e.g. the chair is. The ClawPi's USB camera has no depth, so the distance to each object
 # comes from the lidar (tall things) or from where its bottom edge touches the floor (small things below the
 # lidar). The camera sits on the pan/tilt gimbal, so its direction is read from TF every time.
@@ -278,7 +278,7 @@ class MappingInterface():
         Mapping must be running (the robot's position is needed). Drive slowly so detections line up.
 
         Args:
-            model (bool, optional): Tag YOLOv5 objects (person, chair, cup...). Defaults to True.
+            model (bool, optional): Tag YOLO26 objects (person, chair, cup...). Defaults to True.
             colours (list, optional): Colour names to tag as well, e.g. ['red', 'blue']. Defaults to None.
 
         Returns:
@@ -289,9 +289,9 @@ class MappingInterface():
             return False
         if self.lidar is None or self.lidar.status != "Running":
             print("No lidar - only objects standing on the floor can be placed on the map")
-        if model and "detect_model" not in self.camera.detection_tasks:
-            self.camera.add_detection_task("detect_model")
-            self._tagging_tasks.append("detect_model")
+        if model and "detect_object" not in self.camera.detection_tasks:
+            self.camera.add_detection_task("detect_object")
+            self._tagging_tasks.append("detect_object")
         if colours:
             if "detect_colour" not in self.camera.detection_tasks:
                 self.camera.add_detection_task("detect_colour")
@@ -329,7 +329,7 @@ class MappingInterface():
             data = self.camera.get_detection_data()
 
             sightings = [] # (label, left pixel, right pixel, bottom pixel) of each detection box
-            model = data.get('detect_model', {})
+            model = data.get('detect_object', {})
             if model.get('found') and model.get('time') != last_model_time: # Only use each model result once
                 last_model_time = model.get('time')
                 for target in model.get('targets', []):

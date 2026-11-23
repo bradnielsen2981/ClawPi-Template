@@ -187,11 +187,11 @@ class RobotInterface(ClawPi):
         Args:
             movetype (str): How to move ('forward', 'turnright', 'turnleft', 'circleright', 'circleleft', 'slideright', 'slideleft').
             distanceto (int): Threshold distance for Lidar (cm) or Line (pixels from the bottom of the frame). Defaults to 250.
-            detection_types (list): What to look for (['lidar', 'line', 'colour', 'model', 'all']).
+            detection_types (list): What to look for (['lidar', 'line', 'colour', 'object', 'all']). 'model' still works for 'object'.
             detection_colours (list): Which specific colors to look for if 'colour' is active. Defaults to ['red'].
             timelimit (int): Max time to spend searching before giving up. Defaults to 5.
             confirmlevel (int): How many distinct detection types must be triggered simultaneously to succeed. Defaults to 1.
-            target_class (str): Which YOLOv5 object class to trigger on (e.g., 'person', 'cup').
+            target_class (str): Which YOLO26 object class to trigger on (e.g., 'person', 'cup').
 
         Returns:
             dict: The final detection data snapshot and timestamp.
@@ -200,6 +200,7 @@ class RobotInterface(ClawPi):
             detection_types = ['colour']
         if detection_colours is None:
             detection_colours = ['red']
+        detection_types = ['object' if t == 'model' else t for t in detection_types] # 'model' is the old name
 
         self.command = "move_direction_until_detection"
         data = {'command': self.command, 'movetype': movetype }
@@ -214,9 +215,9 @@ class RobotInterface(ClawPi):
             if 'colour' in detection_types:
                 self.CAMERA.add_detection_task('detect_colour')
                 self.CAMERA.set_detection_colours(detection_colours)
-            if 'model' in detection_types:
+            if 'object' in detection_types:
                 self.CAMERA.load_detection_model()
-                self.CAMERA.add_detection_task("detect_model")
+                self.CAMERA.add_detection_task("detect_object")
 
         data['starttime'] = time.time()
         endtime = time.time() + timelimit
@@ -294,14 +295,14 @@ class RobotInterface(ClawPi):
                     continue
 
             # --- NEURAL NETWORK CHECK ---
-            if 'model' in detection_types or 'all' in detection_types:
-                model_data = data.get('detect_model', {})
-                if model_data.get('found'):
-                    for target in model_data['targets']:
+            if 'object' in detection_types or 'all' in detection_types:
+                object_data = data.get('detect_object', {})
+                if object_data.get('found'):
+                    for target in object_data['targets']:
                         if target['class'] == target_class:
-                            if 'model' not in detections:
+                            if 'object' not in detections:
                                 print(f"{target_class} detected!")
-                                detections.append('model')
+                                detections.append('object')
                                 if len(detections) == confirmlevel:
                                     break
 
@@ -373,7 +374,7 @@ class RobotInterface(ClawPi):
         """
         self.command = "cycle_through_all_detection_tasks"
 
-        tasks_to_test = ['baseline', 'detect_line', 'detect_colour', 'detect_model', 'detect_depth']
+        tasks_to_test = ['baseline', 'detect_line', 'detect_colour', 'detect_object']
 
         # Pre-load dependencies
         self.CAMERA.set_detection_colours(['red', 'green', 'blue'])
