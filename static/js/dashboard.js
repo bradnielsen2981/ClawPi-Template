@@ -1,4 +1,4 @@
-/* This is your mission JavaScript, it has been embedded into mission.html */
+/* This is your dashboard JavaScript, it has been embedded into dashboard.html */
 
 function hide_dashboard()
 {

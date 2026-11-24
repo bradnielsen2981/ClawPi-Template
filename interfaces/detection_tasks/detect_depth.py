@@ -6,7 +6,7 @@ import time
 import cv2
 import numpy as np
 
-from .base import Detector
+from .base import Detector, keep_or_expire
 
 
 class DepthDetector(Detector):
@@ -20,7 +20,7 @@ class DepthDetector(Detector):
     def detect(self, rgb, depth, previous, now):
         if depth is None: # No depth picture (yet) - report nothing found rather than leaving detect_once waiting
             return {'found': False, 'zones': {}, 'time': now}
-        return self.detect_depth(depth)
+        return keep_or_expire(previous, self.detect_depth(depth), now, self.expire_time)
 
     def detect_depth(self, depth):
         """

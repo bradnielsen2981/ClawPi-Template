@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 import yaml
 
-from .base import Detector, keep_or_expire
+from .base import Detector, keep_or_expire_items
 
 YOLO_DIR = '/home/ubuntu/third_party_ros2/yolo/yolo26'
 YOLO_EXAMPLE_DIR = '/home/ubuntu/ros2_ws/src/example/example/yolo_detect/models/26'
@@ -175,7 +175,10 @@ class ObjectDetector(Detector):
                 continue
             elapsed = time.time() - starttime
             self.framerate = round(1 / elapsed, 1) if elapsed > 0 else 0.0
-            self._result = {'found': bool(targets), 'targets': targets, 'time': time.time()}
+            now = time.time()
+            for target in targets:
+                target['time'] = now
+            self._result = {'found': bool(targets), 'targets': targets, 'time': now}
 
     def _read_result(self, result, labels, task):
         """Turns an Ultralytics result into a list of targets (see detect)."""
@@ -208,15 +211,21 @@ class ObjectDetector(Detector):
         Returns:
             dict: 'found', 'time' and 'targets', or None until the network has produced its first result.
                   Each target is {'class', 'score', 'rect' [x, y, width, height] (top-left corner),
-                  'distance' (mm, if there is a depth picture)}, plus 'angle' (degrees) and 'corners' (4 points)
-                  for models with rotated boxes (e.g. best_garbage_26).
+                  'time' (when it was last seen), 'distance' (mm, if there is a depth picture)}, plus 'angle'
+                  (degrees) and 'corners' (4 points) for models with rotated boxes (e.g. best_garbage_26).
+                  Each class is sticky on its own: one that is lost stays for the camera's expire time.
         """
         result = self._result
         if result is None:
             return None
-        data = keep_or_expire(previous, result, now, self.camera.detection_data_expire_time)
+        if self.is_stale(result, now): # The model has stopped producing results
+            result = {'found': False, 'targets': [], 'time': now}
+        targets = keep_or_expire_items(previous.get('targets', []), [dict(t) for t in result.get('targets', [])],
+                                       now, self.expire_time, key='class')
+        data = {'found': bool(targets), 'targets': targets,
+                'time': max(t['time'] for t in targets) if targets else result['time']}
         if depth is not None:
-            for target in data.get('targets', []):
+            for target in targets:
                 x, y, w, h = target['rect']
                 target['distance'] = self.camera.get_distance_at(x + w // 2, y + h // 2, radius=max(3, min(w, h) // 4), depth=depth)
         return data

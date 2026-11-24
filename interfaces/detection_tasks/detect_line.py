@@ -22,7 +22,13 @@ class LineDetector(Detector):
 
     def detect(self, rgb, depth, previous, now):
         _, data = self.detect_line(rgb, self.colour)
-        return keep_or_expire(previous, data, now, self.camera.detection_data_expire_time)
+        data = keep_or_expire(previous, data, now, self.expire_time)
+        # The crossing line is sticky on its own, so it isn't lost while the line itself is still seen
+        old_crossing = previous.get('crossing')
+        if (data.get('found') and 'crossing' not in data and old_crossing
+                and now - old_crossing.get('time', 0) < self.expire_time):
+            data = dict(data, crossing=old_crossing)
+        return data
 
     def detect_line(self, frame, colour=None):
         """
@@ -71,7 +77,8 @@ class LineDetector(Detector):
         coverage = mask.mean(axis=1) / 255.0
         rows = np.where(coverage > self.crossing_fraction)[0]
         if rows.size:
-            data.update({'found': True, 'crossing': {'found': True, 'y': int(rows.max()) + top}, 'time': time.time()})
+            data.update({'found': True, 'crossing': {'found': True, 'y': int(rows.max()) + top, 'time': time.time()},
+                         'time': time.time()})
             data.setdefault('points', [])
 
         return frame, data

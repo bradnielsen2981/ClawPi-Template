@@ -8,7 +8,9 @@ import cv2
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 from clawpiinterface import ClawPi
-from interfaces.soundinterface_old import SoundInterface
+# Sound is switched off for now: soundinterface_old.py needs speake3 and espeak, which aren't installed.
+# To switch it back on, uncomment this import and the SoundInterface() line in RobotInterface.__init__.
+# from interfaces.soundinterface_old import SoundInterface
 from camerainterface import CameraInterface
 from lidarinterface import LidarInterface
 from mappinginterface import MappingInterface
@@ -24,6 +26,21 @@ LED_COLOURS = {
 DRIVE_SPEED = 0.15 # m/s
 TURN_SPEED = 0.5   # rad/s
 
+class SilentSound():
+    """
+    Stands in for SoundInterface while sound is switched off. It has the same methods, so calls like
+    ROBOT.SOUND.say("Hello") keep working; say() prints the message instead of speaking it.
+    """
+    def say(self, message):
+        print(f"[sound off] {message}")
+    def get_all_voices(self): pass
+    def load_mp3(self, song): pass
+    def play_music(self, times=-1): pass
+    def pause_music(self): pass
+    def unpause_music(self): pass
+    def stop_music(self): pass
+    def set_volume(self, v=0.8): pass
+
 class RobotInterface(ClawPi):
 
     def __init__(self):
@@ -33,7 +50,8 @@ class RobotInterface(ClawPi):
         """
         self.command = "Ready" # keep track of user commands
         self.show_camera = False # only turn this on to see the camera window, will slow down performance when using VNC
-        self.SOUND = SoundInterface()
+        # self.SOUND = SoundInterface()
+        self.SOUND = SilentSound() # stands in while sound is switched off (see the imports)
 
         self.logger = logging.getLogger('Robot')
         setup_logger(self.logger, '../logs/robot.log')

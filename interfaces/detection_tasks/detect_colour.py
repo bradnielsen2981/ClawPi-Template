@@ -28,7 +28,7 @@ class ColourDetector(Detector):
             colours = list(self.colours)
         found = {}
         for colour, data in self.detect_colours(rgb, colours).items():
-            data = keep_or_expire(previous.get(colour, {}), data, now, self.camera.detection_data_expire_time)
+            data = keep_or_expire(previous.get(colour, {}), data, now, self.expire_time)
             if data.get('found'):
                 if depth is not None:
                     (x, y), (w, h), _ = data['rect']

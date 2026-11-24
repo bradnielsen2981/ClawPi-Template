@@ -3,13 +3,14 @@
 # To add a new one: write a Detector subclass in its own file (see base.py) and add it to DETECTOR_CLASSES.
 # The order here is the order they run and are drawn in.
 
-from .base import Detector, KERNEL, largest_contour, keep_or_expire, json_safe
+from .base import Detector, KERNEL, largest_contour, keep_or_expire, keep_or_expire_items, json_safe
 from .detect_line import LineDetector
 from .detect_colour import ColourDetector
 from .detect_object import ObjectDetector
+from .detect_pose import PoseDetector
 
 # detect_depth (detect_depth.py) is switched off: the ClawPi has no depth camera by default. If one is fitted,
 # add "from .detect_depth import DepthDetector" above, put DepthDetector in this list, and create the camera
 # with CameraInterface(use_depth=True).
-DETECTOR_CLASSES = [LineDetector, ColourDetector, ObjectDetector]
-DETECTION_TASKS = [cls.name for cls in DETECTOR_CLASSES] # 'detect_line', 'detect_colour', 'detect_object'
+DETECTOR_CLASSES = [LineDetector, ColourDetector, ObjectDetector, PoseDetector]
+DETECTION_TASKS = [cls.name for cls in DETECTOR_CLASSES] # 'detect_line', 'detect_colour', 'detect_object', 'detect_pose'

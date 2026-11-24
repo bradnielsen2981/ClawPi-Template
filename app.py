@@ -2,7 +2,7 @@
 
 from flask import *
 from interfaces.databaseinterface import Database
-from template.interfaces.hashinginterface import *
+from interfaces.hashinginterface import *
 from robot import Robot
 import logging, time, sys, os, signal
 
@@ -38,7 +38,7 @@ def backdoor():
 @app.route('/', methods=["GET","POST"])
 def login():
     if 'userid' in session:
-        return redirect('/mission')
+        return redirect('/dashboard')
     app.logger.info("Login")
     if request.method == "POST":
         email = request.form['email']
@@ -46,18 +46,18 @@ def login():
         if email == 'admin@admin' and password == 'admin': 
             session['userid'] = 1
             session['permission'] = 'admin'
-            return redirect('./mission') #takes 3 seconds for the CAMERA to start
+            return redirect('./dashboard') #takes 3 seconds for the CAMERA to start
     return render_template("login.html")
 
 # Dashboard for the robot
-@app.route('/mission', methods=['GET','POST'])
-def mission():
+@app.route('/dashboard', methods=['GET','POST'])
+def dashboard():
     if not 'userid' in session:
         return redirect('/')
     loaded = 0
     if ROBOT:
         loaded = 1
-    return render_template('mission.html', robot_loaded=loaded)
+    return render_template('dashboard.html', robot_loaded=loaded)
 
 # load the robot
 @app.route('/load_robot', methods=['GET','POST'])

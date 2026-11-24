@@ -45,12 +45,29 @@ def json_safe(value):
     return str(value)
 
 def keep_or_expire(old, new, now, expire_time):
-    """Returns the new data if something was found, otherwise keeps the old find until it expires (stops flickering)."""
+    """
+    Makes a detection sticky: returns the new data if something was found, otherwise keeps the old find until
+    expire_time seconds after it was last seen (stops flickering). Both dicts need 'found' and 'time'.
+    """
     if new.get('found'):
         return new
     if old.get('found') and now - old.get('time', 0) < expire_time:
         return old
     return new
+
+def keep_or_expire_items(old_items, new_items, now, expire_time, key):
+    """
+    Makes each item in a list of detections sticky on its own (e.g. each object class), so losing one doesn't
+    remove the others. Items in old_items whose key isn't in new_items are kept until expire_time seconds after
+    they were last seen. Each item needs a 'time'.
+
+    Returns:
+        list: The new items followed by the old items still being kept.
+    """
+    new_keys = {item.get(key) for item in new_items}
+    kept = [item for item in old_items
+            if item.get(key) not in new_keys and now - item.get('time', 0) < expire_time]
+    return list(new_items) + kept
 
 
 #-------------------------------------------
@@ -66,6 +83,18 @@ class Detector():
                                       detection_data_expire_time and the newest frames).
         """
         self.camera = camera
+
+    @property
+    def expire_time(self):
+        """Seconds to keep a detection after it was last seen: the camera's detection_data_expire_time when
+        sticky_detections is on, otherwise 0 (detections disappear as soon as they are lost)."""
+        camera = self.camera
+        return camera.detection_data_expire_time if getattr(camera, 'sticky_detections', True) else 0.0
+
+    def is_stale(self, result, now):
+        """True if a background model's 'found' result is older than it may be kept, e.g. because the model has
+        stopped producing results. Never less than a second, so a slow model's newest result isn't dropped."""
+        return result.get('found') and now - result.get('time', now) > max(self.expire_time, 1.0)
 
     def prepare(self):
         """Called when the task is added, e.g. to load a model. Returns False if the task can't run."""

@@ -1,4 +1,7 @@
 {% extends "layout.html" %}
+{% block styles %}
+    <link rel="stylesheet" href="/static/css/dashboard.css">
+{% endblock %}
 {% block content %}
     <div class="page-header" id="banner">
         <div class="row">
@@ -32,5 +35,5 @@
 {% endblock %}
 {% block scripts %}
     <script> robot_loaded = {{robot_loaded}}; </script>
-    <script src="/static/js/mission.js"></script> 
+    <script src="/static/js/dashboard.js"></script> 
 {% endblock %}

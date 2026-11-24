@@ -3,7 +3,7 @@
 # Camera interface for the Hiwonder MentorPi depth camera (ascamera).
 # Frames come straight from the ROS 2 topics published by the robot's bringup (no video server needed).
 # A background thread runs the requested detection tasks on the newest frame, draws the results and keeps
-# the latest detection data ready for the robot code. Each detection task (line, colour, YOLO26 objects)
+# the latest detection data ready for the robot code. Each detection task (line, colour, YOLO26 objects, MediaPipe pose)
 # lives in its own file in detection_tasks/ - add a new one there and it can be used here straight away.
 # Run inside the MentorPi container, where ROS 2 is available.
 
@@ -90,7 +90,10 @@ class CameraInterface():
         self.detection_data = {}
         self.detection_tasks = []
         self.detect_once = False
-        self.detection_data_expire_time = 1.0 # Seconds to keep a detection after it is lost (stops flickering)
+        # Sticky detections: each detection stays in the detection data until detection_data_expire_time seconds
+        # after it was last seen, then disappears (stops flickering). Set with set_sticky_detections().
+        self.sticky_detections = True
+        self.detection_data_expire_time = 1.0
         self.clear_temp_detection_data = False
 
         # Depth
@@ -501,14 +504,30 @@ class CameraInterface():
             self.detection_data.clear()
         with self.clear_lock:
             self.clear_temp_detection_data = True
-        self.detectors['detect_object'].reset() # Straight away, so an old result isn't picked up before the clear
+        for detector in self.detectors.values(): # Background detectors straight away, so an old result isn't picked up
+            if type(detector).background_loop is not Detector.background_loop:
+                detector.reset()
+
+    def set_sticky_detections(self, sticky=True, expire_time=None):
+        """
+        Turns sticky detections on or off. When on, a detection stays in the detection data after it is lost
+        until expire_time seconds after it was last seen, so one missed frame doesn't make it flicker away.
+        When off, detections disappear on the first frame they aren't seen.
+
+        Args:
+            sticky (bool, optional): Keep detections for a while after they are lost. Defaults to True.
+            expire_time (float, optional): Seconds to keep them. Defaults to the current setting (1 second).
+        """
+        self.sticky_detections = bool(sticky)
+        if expire_time is not None:
+            self.detection_data_expire_time = float(expire_time)
 
     def add_detection_task(self, task, detect_once=False):
         """
         Adds a specific vision task to the active background polling cycle.
 
         Args:
-            task (str): A detection task from detection_tasks/: 'detect_line', 'detect_colour' or 'detect_object'.
+            task (str): A detection task from detection_tasks/: 'detect_line', 'detect_colour', 'detect_object' or 'detect_pose'.
             detect_once (bool, optional): If True, removes the tasks after the first round of results. Defaults to False.
         """
         if task not in self.detectors:
@@ -718,7 +737,8 @@ class CameraInterface():
                     # CPU saver for headless mode
                     time.sleep(0.03)
 
-            extra = f", objects {self.detectors['detect_object'].framerate} fps" if task == 'detect_object' else ""
+            model_fps = getattr(self.detectors.get(task), 'framerate', None)
+            extra = f", model {model_fps} fps" if model_fps is not None else ""
             print(f"    frame rate: {self.framerate} fps{extra}")
             print(f"    data: {self.get_detection_data()}")
 
