@@ -17,6 +17,10 @@ class ColourDetector(Detector):
         self.min_area = 800             # Pixels at the full 640x480 resolution
         self.process_size = (320, 240)  # Detection runs on a smaller copy of the frame (4x fewer pixels)
         self.last_centres = {}          # Used to keep following the same blob between frames
+        # Check one colour per frame, taking turns (frame 1 red, 2 green, 3 blue, 4 red...). Much faster with
+        # several colours; each colour is still checked several times a second and stays sticky in between.
+        self.one_colour_per_frame = True
+        self._turn = 0
 
     def detect(self, rgb, depth, previous, now):
         """
@@ -26,9 +30,17 @@ class ColourDetector(Detector):
         """
         with self.colours_lock:
             colours = list(self.colours)
+        if self.one_colour_per_frame and len(colours) > 1:
+            self._turn = (self._turn + 1) % len(colours)
+            checked = self.detect_colours(rgb, [colours[self._turn]])
+        else:
+            checked = self.detect_colours(rgb, colours)
         found = {}
-        for colour, data in self.detect_colours(rgb, colours).items():
-            data = keep_or_expire(previous.get(colour, {}), data, now, self.expire_time)
+        for colour in colours:
+            if colour in checked:
+                data = keep_or_expire(previous.get(colour, {}), checked[colour], now, self.expire_time)
+            else:
+                data = previous.get(colour, {}) # Not its turn this frame: keep its last result
             if data.get('found'):
                 if depth is not None:
                     (x, y), (w, h), _ = data['rect']

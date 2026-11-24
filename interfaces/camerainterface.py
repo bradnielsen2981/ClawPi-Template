@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #!/usr/bin/env python3
-# Camera interface for the Hiwonder MentorPi depth camera (ascamera).
+# Camera interface for the ClawPi's camera (or a Hiwonder ascamera depth camera).
 # Frames come straight from the ROS 2 topics published by the robot's bringup (no video server needed).
 # A background thread runs the requested detection tasks on the newest frame, draws the results and keeps
 # the latest detection data ready for the robot code. Each detection task (line, colour, YOLO26 objects, MediaPipe pose)
@@ -21,15 +21,18 @@ sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 from detection_tasks import Detector, DETECTOR_CLASSES, DETECTION_TASKS, json_safe
 
-RGB_IMAGE_TOPIC = '/ascamera/camera_publisher/rgb0/image'
-DEPTH_IMAGE_TOPIC = '/ascamera/camera_publisher/depth0/image_raw'
-# Reliable, keep only the newest frame. The camera publishes RELIABLE and its large depth frames
-# never arrive on a best-effort (sensor data) subscription.
+# The ClawPi's USB camera (published by the robot's bringup as 640x480 YUYV at about 15 fps).
+# A MentorPi ascamera depth camera publishes on '/ascamera/camera_publisher/rgb0/image' instead.
+RGB_IMAGE_TOPIC = '/image_raw'
+DEPTH_IMAGE_TOPIC = '/ascamera/camera_publisher/depth0/image_raw' # only with a fitted ascamera depth camera
+# Reliable, keep only the newest frame. The camera publishes RELIABLE (and large depth frames
+# never arrive on a best-effort (sensor data) subscription).
 CAMERA_QOS = 1
 
-# Hiwonder's colour calibration (edit with their lab_tool). 'Stereo' is the table for the ascamera depth camera.
+# Hiwonder's colour calibration (edit with their lab_tool). 'Mono' is the table for a normal (USB) camera,
+# 'Stereo' the one for the ascamera depth camera.
 LAB_CONFIG_PATH = '/home/ubuntu/software/lab_tool/lab_config.yaml'
-LAB_CAMERA_TYPE = 'Stereo'
+LAB_CAMERA_TYPE = 'Mono'
 
 # Default folder for saved pictures (<project>/static/photos)
 PHOTO_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'static', 'photos')
@@ -41,7 +44,7 @@ def image_msg_to_array(msg):
     Converts a ROS sensor_msgs/Image into a numpy array without going through cv_bridge.
 
     Args:
-        msg (sensor_msgs.msg.Image): A colour (bgr8/rgb8) or depth (16UC1) image message.
+        msg (sensor_msgs.msg.Image): A colour (bgr8/rgb8/YUYV/UYVY) or depth (16UC1) image message.
 
     Returns:
         numpy.ndarray: BGR uint8 image for colour, uint16 millimetres for depth (0 = no reading).
@@ -50,6 +53,11 @@ def image_msg_to_array(msg):
         img = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.step)
         img = img[:, :msg.width * 3].reshape(msg.height, msg.width, 3)
         return cv2.cvtColor(img, cv2.COLOR_RGB2BGR) if msg.encoding == 'rgb8' else img
+    if msg.encoding in ('yuv422_yuy2', 'yuyv', 'yuv422', 'uyvy'): # USB cameras: 2 bytes per pixel
+        img = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.step)
+        img = img[:, :msg.width * 2].reshape(msg.height, msg.width, 2)
+        code = cv2.COLOR_YUV2BGR_YUY2 if msg.encoding in ('yuv422_yuy2', 'yuyv') else cv2.COLOR_YUV2BGR_UYVY
+        return cv2.cvtColor(img, code)
     if msg.encoding in ('16UC1', 'mono16'):
         return np.frombuffer(msg.data, dtype=np.uint16).reshape(msg.height, msg.step // 2)[:, :msg.width]
     raise ValueError(f"Unsupported image encoding: {msg.encoding}")
@@ -105,7 +113,8 @@ class CameraInterface():
         self.detectors = {cls.name: cls(self) for cls in DETECTOR_CLASSES}
         self.background_threads = []
 
-        self.output_text = True
+        self.output_text = True            # Frame rate (and any output message) written on the video in yellow
+        self.output_detection_text = False # Also write each detector's summary on the video
         self.output_message = ""
         self.paused = False
         self.drawing = True
@@ -359,14 +368,16 @@ class CameraInterface():
                 detector.draw(frame, data[name])
 
     def _draw_text(self, frame, data, tasks):
-        """Writes the frame rate, mode, custom message and each active detector's summary onto the frame."""
-        lines = [f"FPS: {self.framerate}  Mode: {self.mode}  {self.output_message}"]
+        """Writes the frame rate and custom message (plus each detector's summary if output_detection_text is on)
+        onto the frame in yellow."""
+        lines = [f"FPS: {self.framerate}  {self.output_message}".strip()]
         self.output_message = ""
-        for name, detector in self.detectors.items():
-            if name in tasks:
-                lines.append(detector.describe(data.get(name, {})))
+        if self.output_detection_text:
+            for name, detector in self.detectors.items():
+                if name in tasks:
+                    lines.append(detector.describe(data.get(name, {})))
         for i, text in enumerate(lines):
-            cv2.putText(frame, text, (10, 15 + i * 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1, cv2.LINE_AA)
+            cv2.putText(frame, text, (10, 20 + i * 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
 
     def get_frame(self):
         """
@@ -602,6 +613,8 @@ class CameraInterface():
         with self.task_lock:
             if task in self.detection_tasks:
                 self.detection_tasks.remove(task)
+        if task in self.detectors:
+            self.detectors[task].reset() # So an old result isn't shown when the task is added again
 
     def end_detection(self):
         """Helper method that stops all tasks, wipes active data, and clears target colors simultaneously."""
@@ -639,6 +652,28 @@ class CameraInterface():
         detector = self.detectors['detect_colour']
         with detector.colours_lock:
             detector.colours = list(colourlist or [])
+
+    def set_line_detection_options(self, lines=True, crossings=True):
+        """
+        Chooses what detect_line looks for.
+
+        Args:
+            lines (bool, optional): The line to follow (angle, offset, points). Defaults to True.
+            crossings (bool, optional): Crossing lines / intersections. Defaults to True.
+        """
+        detector = self.detectors['detect_line']
+        detector.find_line, detector.find_crossing = bool(lines), bool(crossings)
+
+    def set_pose_gestures(self, gestures=None):
+        """
+        Chooses which gestures detect_pose reports (people are always found).
+
+        Args:
+            gestures (list, optional): Names from detection_tasks/detect_pose.py GESTURES, e.g. ['left_arm_up', 'fallen'].
+                                       None reports them all.
+        """
+        from detection_tasks.detect_pose import GESTURES
+        self.detectors['detect_pose'].watch_gestures = list(GESTURES) if gestures is None else [g for g in gestures if g in GESTURES]
 
     def set_line_detection_colour(self, colour):
         """

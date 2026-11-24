@@ -1,8 +1,22 @@
 {% extends "layout.html" %}
 {% block content %}
 <div class="page-header" id="banner">
-    <div class="row">
+    <span class="page-icon"><i class="fa-solid fa-user-shield"></i></span>
+    <div>
         <h1>Admin</h1>
+        <p>Manage users and settings</p>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title"><i class="fa-solid fa-users"></i> Users</h2>
+    </div>
+    <div class="card-body">
+        <div class="empty-state">
+            <i class="fa-solid fa-user-shield"></i>
+            <p>No users to show yet.</p>
+        </div>
     </div>
 </div>
 {% endblock %}

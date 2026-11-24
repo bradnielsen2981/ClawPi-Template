@@ -64,6 +64,7 @@ class PoseDetector(Detector):
         self.num_poses = 1               # Most people to look for. The model is most reliable with one person.
         self.confidence_level = 0.5      # Minimum score (0-1) to find a person
         self.visibility_threshold = 0.5  # Landmarks less visible than this (0-1) are ignored for gestures and drawing
+        self.watch_gestures = list(GESTURES) # Gestures to report (see GESTURES). People are always found.
         self.framerate = 0.0
         self.model_lock = threading.Lock()
         self._mp = None
@@ -184,7 +185,7 @@ class PoseDetector(Detector):
                 'size': round(h / height, 2),   # Fraction of the picture's height - bigger means closer
                 'score': round(sum(p[2] for p in points.values()) / len(points), 2),
                 'landmarks': points,
-                'gestures': self._gestures(points)}
+                'gestures': [g for g in self._gestures(points) if g in self.watch_gestures]}
 
     def _gestures(self, points):
         """
@@ -251,8 +252,8 @@ class PoseDetector(Detector):
 
         for gesture in result['gestures']:
             self._gesture_times[gesture] = max(self._gesture_times.get(gesture, 0), result['time'])
-        gestures = [g for g in GESTURES if g in result['gestures']
-                    or now - self._gesture_times.get(g, 0) < self.expire_time]
+        gestures = [g for g in GESTURES if g in self.watch_gestures and (g in result['gestures']
+                    or now - self._gesture_times.get(g, 0) < self.expire_time)]
         data = dict(data, gestures=gestures, found=data['found'] or bool(gestures))
         if depth is not None:
             for person in data.get('people', []):

@@ -19,6 +19,8 @@ class LineDetector(Detector):
         self.rois = ((0.90, 0.95, 0.7), (0.80, 0.85, 0.2), (0.70, 0.75, 0.1))
         self.search_top = 0.4        # Crossing lines are searched for from here down (fraction of height)
         self.crossing_fraction = 0.5 # A row this full of line colour counts as a crossing line
+        self.find_line = True        # Look for the line to follow (angle, offset, points)
+        self.find_crossing = True    # Look for crossing lines (intersections)
 
     def detect(self, rgb, depth, previous, now):
         _, data = self.detect_line(rgb, self.colour)
@@ -56,7 +58,7 @@ class LineDetector(Detector):
 
         points = []
         weighted_sum, weight_used = 0.0, 0.0
-        for r_top, r_bottom, weight in self.rois:
+        for r_top, r_bottom, weight in (self.rois if self.find_line else ()):
             y0, y1 = int(r_top * h) - top, int(r_bottom * h) - top
             contours, _ = cv2.findContours(mask[y0:y1], cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             contour, _ = largest_contour(contours, 30)
@@ -76,7 +78,7 @@ class LineDetector(Detector):
         # Crossing line: the lowest (nearest) row that is mostly line colour
         coverage = mask.mean(axis=1) / 255.0
         rows = np.where(coverage > self.crossing_fraction)[0]
-        if rows.size:
+        if rows.size and self.find_crossing:
             data.update({'found': True, 'crossing': {'found': True, 'y': int(rows.max()) + top, 'time': time.time()},
                          'time': time.time()})
             data.setdefault('points', [])

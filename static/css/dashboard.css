@@ -1,1 +1,92 @@
 /* Styles for the dashboard page only (linked in dashboard.html). Site-wide styles go in custom.css. */
+
+/* Sections in the controls card: a small heading and a row of buttons */
+.control-section + .control-section {
+    margin-top: 1.25rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--app-card-border);
+}
+.control-heading {
+    display: block;
+    margin-bottom: 0.6rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--bs-secondary-color);
+}
+.control-group { display: flex; align-items: center; gap: 0.5rem; }
+.control-label { font-size: 0.9rem; font-weight: 500; }
+
+/* Square-ish icon buttons inside the tilt/pan groups */
+.control-group .btn-group .btn { width: 2.75rem; padding-left: 0; padding-right: 0; }
+#dashboard .control-group .btn-group .btn { border-radius: 0; }
+#dashboard .control-group .btn-group .btn:first-child { border-radius: 999px 0 0 999px; }
+#dashboard .control-group .btn-group .btn:last-child { border-radius: 0 999px 999px 0; }
+
+/* Detection split buttons: rounded as one pill */
+#dashboard .detect-group .btn { border-radius: 0; }
+#dashboard .detect-group .detect-toggle { border-radius: 999px 0 0 999px; padding-right: 0.8rem; }
+#dashboard .detect-group .dropdown-toggle-split { border-radius: 0 999px 999px 0; padding-left: 0.6rem; padding-right: 0.8rem; }
+
+/* Dropdown menus of checkboxes */
+.detect-group .dropdown-menu {
+    min-width: 15rem;
+    padding: 0.4rem;
+    border: 1px solid var(--app-card-border);
+    border-radius: 0.75rem;
+    box-shadow: var(--app-shadow);
+}
+.detect-group .dropdown-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.55rem;
+    border-radius: 0.5rem;
+    cursor: pointer;
+    white-space: normal;
+}
+.detect-group .dropdown-item .form-check-input { margin-top: 0.2rem; flex-shrink: 0; }
+.detect-group .dropdown-item:active { background: var(--bs-tertiary-bg); color: inherit; }
+.swatch {
+    display: inline-block;
+    width: 0.9rem;
+    height: 0.9rem;
+    margin-top: 0.2rem;
+    border-radius: 50%;
+    border: 1px solid rgba(0, 0, 0, 0.2);
+    flex-shrink: 0;
+}
+
+/* Detection data card */
+.data-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.5rem 1rem;
+    padding: 0.6rem 0;
+}
+.data-row + .data-row { border-top: 1px solid var(--app-card-border); }
+.data-label { width: 6.5rem; font-weight: 600; flex-shrink: 0; }
+.data-label i { color: var(--app-accent); }
+.data-values { display: flex; flex-wrap: wrap; gap: 0.4rem; flex: 1; min-width: 0; }
+.data-chip {
+    display: inline-block;
+    padding: 0.15rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.85rem;
+    background: var(--bs-tertiary-bg);
+    border: 1px solid var(--app-card-border);
+}
+.data-chip.chip-found { background: rgba(16, 184, 128, 0.14); border-color: rgba(16, 184, 128, 0.35); }
+.data-chip.chip-gesture { background: rgba(250, 176, 5, 0.18); border-color: rgba(250, 176, 5, 0.45); }
+
+.raw-data summary { cursor: pointer; font-size: 0.85rem; color: var(--bs-secondary-color); }
+.raw-data pre {
+    max-height: 16rem;
+    margin: 0.5rem 0 0;
+    padding: 0.75rem;
+    overflow: auto;
+    font-size: 0.75rem;
+    border-radius: 0.5rem;
+    background: var(--bs-tertiary-bg);
+}

@@ -3,37 +3,199 @@
     <link rel="stylesheet" href="/static/css/dashboard.css">
 {% endblock %}
 {% block content %}
-    <div class="page-header" id="banner">
-        <div class="row">
-            <h1>Mission Dashboard</h1>
-        </div>
+{# Options for the detection menus. Colours are the ones calibrated in Hiwonder's lab_tool. #}
+{% set colours = [('red', 'Red', '#e03131'), ('green', 'Green', '#2f9e44'), ('blue', 'Blue', '#1c7ed6'),
+                  ('yellow', 'Yellow', '#fab005'), ('dark_green', 'Dark green', '#0b5d2a'),
+                  ('black', 'Black', '#111111'), ('white', 'White', '#ffffff')] %}
+{% set default_colours = ['red', 'green', 'blue'] %}
+{% set object_models = [('yolo26n', 'Everyday objects', 'person, cup, chair, bottle...'),
+                        ('best_traffic_26', 'Traffic signs', 'go, right, park, red, green, crosswalk'),
+                        ('best_garbage_26', 'Garbage', '12 kinds of rubbish'),
+                        ('best_FourLineFollowing', 'Track signs', 'traffic signs plus one, two (slower)')] %}
+{% set gestures = [('left_arm_up', 'Left arm up'), ('right_arm_up', 'Right arm up'), ('both_arms_up', 'Both arms up'),
+                   ('arms_out', 'Arms out'), ('fallen', 'Fallen over')] %}
+
+<div class="page-header flex-wrap" id="banner">
+    <span class="page-icon"><i class="fa-solid fa-gauge-high"></i></span>
+    <div>
+        <h1>Mission Dashboard</h1>
+        <p>Load the robot to see its camera and controls</p>
     </div>
-    <div id="dashboard">
-    
-        <div class="row">
-            <div class="col-8">
-                <div class="row">
-                    <div id="loader" class="loader"></div>
-                    <button id="load_robot_button" type="button" class="btn btn-success">Load Robot</button>
-                    <button id="shutdown_robot_button" type="button" class="btn btn-danger">Shutdown Robot</button>
-                </div>
-                <div id="videofeed" class="row"> </div>
-                <div id="robot_buttons">
-                    <div class="row">
-                        <button id="turn_on_detection_button" type="button" class="btn btn-success">Turn on Detection <i class="fa-solid fa-arrows-to-eye"></i></button>
-                        <button id="turn_off_detection_button" type="button" class="btn btn-danger">Turn off Detection</button>
-                        <button id="look_down_button" type="button" class="btn btn-primary">Look Down</button>
+    <div class="ms-auto d-flex align-items-center gap-2">
+        <div id="loader" class="loader"></div>
+        <button id="load_robot_button" type="button" class="btn btn-success rounded-pill px-4">
+            <i class="fa-solid fa-play"></i> Load Robot
+        </button>
+        <button id="shutdown_robot_button" type="button" class="btn btn-outline-danger rounded-pill px-4">
+            <i class="fa-solid fa-power-off"></i> Shutdown Robot
+        </button>
+    </div>
+</div>
+
+<div id="dashboard" class="row g-4">
+
+    <!-- FIRST COLUMN (2/3): camera, controls and detection data -->
+    <div class="col-lg-8 d-flex flex-column gap-4">
+
+        <!-- Camera view -->
+        <div class="card">
+            <div class="card-header d-flex align-items-center">
+                <h2 class="card-title"><i class="fa-solid fa-video"></i> Camera</h2>
+                <span id="camera_fps" class="badge rounded-pill text-bg-secondary ms-auto">offline</span>
+            </div>
+            <div class="card-body">
+                <div id="videofeed" class="video-frame"> </div>
+            </div>
+        </div>
+
+        <div id="robot_buttons" class="d-flex flex-column gap-4">
+
+            <!-- Camera and detection buttons -->
+            <div class="card">
+                <div class="card-body">
+
+                    <!-- Camera tilt and pan -->
+                    <div class="control-section">
+                        <span class="control-heading">Camera</span>
+                        <div class="d-flex flex-wrap align-items-center gap-3">
+                            <div class="control-group">
+                                <span class="control-label">Tilt</span>
+                                <div class="btn-group" role="group" aria-label="Camera tilt">
+                                    <button type="button" class="btn btn-outline-secondary camera-move" data-direction="up" title="Tilt up" aria-label="Tilt up"><i class="fa-solid fa-chevron-up"></i></button>
+                                    <button type="button" class="btn btn-outline-secondary camera-move" data-direction="down" title="Tilt down" aria-label="Tilt down"><i class="fa-solid fa-chevron-down"></i></button>
+                                </div>
+                            </div>
+                            <div class="control-group">
+                                <span class="control-label">Pan</span>
+                                <div class="btn-group" role="group" aria-label="Camera pan">
+                                    <button type="button" class="btn btn-outline-secondary camera-move" data-direction="left" title="Pan left" aria-label="Pan left"><i class="fa-solid fa-chevron-left"></i></button>
+                                    <button type="button" class="btn btn-outline-secondary camera-move" data-direction="right" title="Pan right" aria-label="Pan right"><i class="fa-solid fa-chevron-right"></i></button>
+                                </div>
+                            </div>
+                            <button type="button" class="btn btn-outline-secondary camera-move" data-direction="centre" title="Point the camera straight ahead">
+                                <i class="fa-solid fa-crosshairs"></i> Centre
+                            </button>
+                            <span id="camera_angles" class="small text-body-secondary"></span>
+                        </div>
                     </div>
+
+                    <!-- Detection -->
+                    <div class="control-section">
+                        <span class="control-heading">Detection</span>
+                        <div class="d-flex flex-wrap gap-2">
+
+                            <!-- Colour: several colours, one checked per frame -->
+                            <div class="btn-group detect-group" data-task="colour">
+                                <button type="button" class="btn btn-outline-secondary detect-toggle"><i class="fa-solid fa-palette"></i> Detect Colour</button>
+                                <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                                    <span class="visually-hidden">Choose colours</span>
+                                </button>
+                                <div class="dropdown-menu">
+                                    <h6 class="dropdown-header">Colours <small class="fw-normal">(one checked per frame, in turn)</small></h6>
+                                    {% for value, label, swatch in colours %}
+                                    <label class="dropdown-item">
+                                        <input class="form-check-input" type="checkbox" value="{{ value }}" {% if value in default_colours %}checked{% endif %}>
+                                        <span class="swatch" style="background:{{ swatch }}"></span> {{ label }}
+                                    </label>
+                                    {% endfor %}
+                                </div>
+                            </div>
+
+                            <!-- Line: lines and/or intersections -->
+                            <div class="btn-group detect-group" data-task="line">
+                                <button type="button" class="btn btn-outline-secondary detect-toggle"><i class="fa-solid fa-route"></i> Detect Line</button>
+                                <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                                    <span class="visually-hidden">Choose line options</span>
+                                </button>
+                                <div class="dropdown-menu">
+                                    <h6 class="dropdown-header">Look for</h6>
+                                    <label class="dropdown-item"><input class="form-check-input" type="checkbox" value="line" checked> <i class="fa-solid fa-grip-lines-vertical fa-fw"></i> Lines</label>
+                                    <label class="dropdown-item"><input class="form-check-input" type="checkbox" value="crossing" checked> <i class="fa-solid fa-plus fa-fw"></i> Line intersections</label>
+                                </div>
+                            </div>
+
+                            <!-- Object: one YOLO model at a time -->
+                            <div class="btn-group detect-group" data-task="object">
+                                <button type="button" class="btn btn-outline-secondary detect-toggle"><i class="fa-solid fa-cube"></i> Detect Object</button>
+                                <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                                    <span class="visually-hidden">Choose model</span>
+                                </button>
+                                <div class="dropdown-menu">
+                                    <h6 class="dropdown-header">YOLO model</h6>
+                                    {% for value, label, hint in object_models %}
+                                    <label class="dropdown-item">
+                                        <input class="form-check-input" type="radio" name="object_model" value="{{ value }}" {% if loop.first %}checked{% endif %}>
+                                        <span>{{ label }}<small class="d-block text-body-secondary">{{ hint }}</small></span>
+                                    </label>
+                                    {% endfor %}
+                                </div>
+                            </div>
+
+                            <!-- Pose: which gestures to report -->
+                            <div class="btn-group detect-group" data-task="pose">
+                                <button type="button" class="btn btn-outline-secondary detect-toggle"><i class="fa-solid fa-person-walking"></i> Detect Pose</button>
+                                <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                                    <span class="visually-hidden">Choose poses</span>
+                                </button>
+                                <div class="dropdown-menu">
+                                    <h6 class="dropdown-header">Poses</h6>
+                                    <label class="dropdown-item fw-semibold"><input class="form-check-input pose-all" type="checkbox" checked> All poses</label>
+                                    <div class="dropdown-divider"></div>
+                                    {% for value, label in gestures %}
+                                    <label class="dropdown-item"><input class="form-check-input" type="checkbox" value="{{ value }}" checked> {{ label }}</label>
+                                    {% endfor %}
+                                </div>
+                            </div>
+
+                            <!-- Depth: no depth camera fitted yet -->
+                            <button type="button" class="btn btn-outline-secondary" disabled title="No depth camera fitted">
+                                <i class="fa-solid fa-layer-group"></i> Depth Camera
+                            </button>
+
+                            <button id="stop_detection_button" type="button" class="btn btn-outline-danger ms-sm-auto">
+                                <i class="fa-solid fa-ban"></i> Stop all
+                            </button>
+                        </div>
+                    </div>
+
                 </div>
             </div>
-            
-            <div id="mission_tab" class="col-4 mission">
-                <h2>Set Mission</h2>
+
+            <!-- Detection data -->
+            <div class="card">
+                <div class="card-header d-flex align-items-center">
+                    <h2 class="card-title"><i class="fa-solid fa-list-check"></i> Detection Data</h2>
+                </div>
+                <div class="card-body">
+                    <div id="detection_data">
+                        <p class="text-body-secondary mb-0">No detection running.</p>
+                    </div>
+                    <details class="raw-data mt-3">
+                        <summary>Raw data</summary>
+                        <pre id="detection_raw">{}</pre>
+                    </details>
+                </div>
             </div>
         </div>
     </div>
+
+    <!-- SECOND COLUMN (1/3): movement (not built yet) -->
+    <div class="col-lg-4">
+        <div id="movement_tab" class="card">
+            <div class="card-header">
+                <h2 class="card-title"><i class="fa-solid fa-gamepad"></i> Movement</h2>
+            </div>
+            <div class="card-body">
+                <div class="empty-state">
+                    <i class="fa-solid fa-arrows-up-down-left-right"></i>
+                    <p>Movement buttons coming soon.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 {% block scripts %}
     <script> robot_loaded = {{robot_loaded}}; </script>
-    <script src="/static/js/dashboard.js"></script> 
+    <script src="/static/js/dashboard.js"></script>
 {% endblock %}

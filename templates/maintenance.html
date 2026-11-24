@@ -1,8 +1,22 @@
 {% extends "layout.html" %}
 {% block content %}
 <div class="page-header" id="banner">
-    <div class="row">
+    <span class="page-icon"><i class="fa-solid fa-screwdriver-wrench"></i></span>
+    <div>
         <h1>Maintenance</h1>
+        <p>Robot health, sensors and servicing</p>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title"><i class="fa-solid fa-heart-pulse"></i> Robot status</h2>
+    </div>
+    <div class="card-body">
+        <div class="empty-state">
+            <i class="fa-solid fa-screwdriver-wrench"></i>
+            <p>No maintenance information yet.</p>
+        </div>
     </div>
 </div>
 {% endblock %}

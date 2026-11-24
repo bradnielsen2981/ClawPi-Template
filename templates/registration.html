@@ -1,8 +1,48 @@
 {% extends "layout.html" %}
 {% block content %}
 <div class="page-header" id="banner">
-    <div class="row">
+    <span class="page-icon"><i class="fa-solid fa-user-plus"></i></span>
+    <div>
         <h1>Registration</h1>
+        <p>Create a new user account</p>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-lg-7 col-xl-6">
+        <div class="card">
+            <div class="card-body p-4">
+                <!-- Starter form matching the users table. Needs a /registration route in app.py to handle the POST. -->
+                <form action="/registration" method="POST">
+                    <div class="row g-3">
+                        <div class="col-sm-6">
+                            <label for="firstname" class="form-label">First name</label>
+                            <input type="text" class="form-control" id="firstname" name="firstname" required>
+                        </div>
+                        <div class="col-sm-6">
+                            <label for="lastname" class="form-label">Last name</label>
+                            <input type="text" class="form-control" id="lastname" name="lastname" required>
+                        </div>
+                        <div class="col-12">
+                            <label for="email" class="form-label">Email</label>
+                            <input type="email" class="form-control" id="email" name="email" autocomplete="email" required>
+                        </div>
+                        <div class="col-sm-6">
+                            <label for="password" class="form-label">Password</label>
+                            <input type="password" class="form-control" id="password" name="password" autocomplete="new-password" required>
+                        </div>
+                        <div class="col-sm-6">
+                            <label for="confirmpassword" class="form-label">Confirm password</label>
+                            <input type="password" class="form-control" id="confirmpassword" name="confirmpassword" autocomplete="new-password" required>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-success rounded-pill px-4 mt-4">
+                        <i class="fa-solid fa-user-plus"></i> Register
+                    </button>
+                </form>
+            </div>
+        </div>
+        <p class="small mt-3">Already registered? <a href="/">Log in</a></p>
     </div>
 </div>
 {% endblock %}

@@ -90,6 +90,67 @@ def stop():
     return jsonify({'message':'stop'})
 
 
+# DASHBOARD CAMERA CONTROLS---------------------------------------------------------------
+
+# Models the dashboard's Detect Object menu can load (see interfaces/detection_tasks/detect_object.py)
+OBJECT_MODELS = ['yolo26n', 'best_traffic_26', 'best_garbage_26', 'best_FourLineFollowing']
+
+# Pan or tilt the camera a step: direction is up, down, left, right or centre
+@app.route('/camera_move', methods=['POST'])
+def camera_move():
+    direction = request.form.get('direction', '')
+    if not ROBOT:
+        return jsonify({'message':'robot not loaded'})
+    if direction not in ('up', 'down', 'left', 'right', 'centre'):
+        return jsonify({'message':'unknown direction'}), 400
+    pan, tilt = ROBOT.nudge_camera(direction)
+    return jsonify({'message':'camera moved', 'pan':pan, 'tilt':tilt})
+
+# Turn one detection task on or off. Form fields:
+#   task    - colour, line, object or pose
+#   on      - 1 to turn on (or update the options), 0 to turn off
+#   options - comma separated: colours (red,green), line parts (line,crossing),
+#             a model name (yolo26n) or gestures (left_arm_up,fallen)
+@app.route('/set_detection', methods=['POST'])
+def set_detection():
+    if not ROBOT:
+        return jsonify({'message':'robot not loaded'})
+    camera = ROBOT.CAMERA
+    task = request.form.get('task', '')
+    on = request.form.get('on') == '1'
+    options = [o for o in request.form.get('options', '').split(',') if o]
+    names = {'colour':'detect_colour', 'line':'detect_line', 'object':'detect_object', 'pose':'detect_pose'}
+    if task not in names:
+        return jsonify({'message':'unknown task'}), 400
+
+    if on and task == 'colour':
+        options = [c for c in options if c in camera.lab_colours]
+        camera.set_detection_colours(options)
+    elif on and task == 'line':
+        camera.set_line_detection_options(lines='line' in options, crossings='crossing' in options)
+    elif on and task == 'object':
+        model = options[0] if options and options[0] in OBJECT_MODELS else 'yolo26n'
+        if not camera.load_detection_model(model): # takes a few seconds the first time
+            return jsonify({'message':f'could not load {model}'}), 500
+    elif on and task == 'pose':
+        camera.set_pose_gestures(options)
+
+    if on and (options or task == 'pose'): # pose with no gestures still finds people
+        camera.add_detection_task(names[task])
+    else:
+        camera.remove_detection_task(names[task])
+    app.logger.info(f'detection {task} {"on" if on else "off"} {options}')
+    return jsonify({'message':'detection updated', 'tasks':camera.detection_tasks})
+
+# The latest camera detection data, frame rate and active tasks (polled by the dashboard)
+@app.route('/detection_data', methods=['GET'])
+def detection_data():
+    if not ROBOT:
+        return jsonify({'loaded':False})
+    camera = ROBOT.CAMERA
+    return jsonify({'loaded':True, 'fps':camera.framerate, 'tasks':list(camera.detection_tasks),
+                    'data':camera.get_detection_data()})
+
 # CAMERA CODE-(do not touch this!!)-------------------------------------------------------
 
 # Continually gets the frame from the pi camera

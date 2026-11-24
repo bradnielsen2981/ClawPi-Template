@@ -12,6 +12,10 @@ source /home/ubuntu/third_party_ros2/third_party_ws/install/local_setup.bash
 # Let scripts anywhere in the project do "from interfaces.clawpiinterface import ClawPi".
 export PYTHONPATH="$(dirname "$HERE"):$PYTHONPATH"
 
+# Flask, Ultralytics, OpenVINO and MediaPipe are installed for the ubuntu user (pip install --user). VS Code runs
+# as root, which doesn't look in another user's folder, so add it - last, so system and ROS packages come first.
+export PYTHONPATH="$PYTHONPATH:/home/ubuntu/.local/lib/python3.10/site-packages"
+
 env | grep -E '^(PATH|PYTHONPATH|LD_LIBRARY_PATH|AMENT_PREFIX_PATH|COLCON_PREFIX_PATH|CMAKE_PREFIX_PATH|PKG_CONFIG_PATH|ROS_[A-Z_]*|RMW_[A-Z_]*)=' \
     > "$HERE/ros.env"
 

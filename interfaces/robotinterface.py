@@ -115,6 +115,27 @@ class RobotInterface(ClawPi):
         self.stop()
         return
 
+    def nudge_camera(self, direction, step=10):
+        """
+        Moves the camera a small step from where it is now (used by the dashboard's pan/tilt buttons).
+
+        Args:
+            direction (str): 'up', 'down', 'left', 'right' or 'centre'.
+            step (int, optional): Degrees to move. Defaults to 10.
+
+        Returns:
+            tuple: The camera's new (pan, tilt) in degrees.
+        """
+        pan, tilt = getattr(self, 'camera_pan', 0), getattr(self, 'camera_tilt', 0)
+        if direction == 'centre':
+            pan, tilt = 0, 0
+        else:
+            pan += {'left': step, 'right': -step}.get(direction, 0)
+            tilt += {'up': step, 'down': -step}.get(direction, 0)
+        self.camera_pan, self.camera_tilt = max(-90, min(90, pan)), max(-90, min(90, tilt))
+        self.set_camera(self.camera_pan, self.camera_tilt, duration=0.2)
+        return self.camera_pan, self.camera_tilt
+
     def set_led_colour(self, colour=None):
         """
         Shows a colour on the robot's two RGB LEDs.
