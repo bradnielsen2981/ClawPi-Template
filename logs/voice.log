@@ -12,3 +12,6 @@
 2026-11-25 02:31:59,184 - VoiceAgent - INFO - say: Piper voice installed and working.
 2026-11-25 02:46:30,889 - VoiceAgent - INFO - Voice agent ready: {'speech_to_text': 'none', 'understanding': 'keywords', 'voice': 'piper'}
 2026-11-25 02:46:30,891 - VoiceAgent - INFO - say: Hello my name is Wally
+2026-11-25 02:48:19,871 - VoiceAgent - INFO - Voice agent ready: {'speech_to_text': 'none', 'understanding': 'keywords', 'voice': 'piper'}
+2026-11-25 02:48:25,038 - VoiceAgent - INFO - say: Hello my name is Wally
+2026-11-25 02:51:33,178 - VoiceAgent - INFO - say: Goodbye
