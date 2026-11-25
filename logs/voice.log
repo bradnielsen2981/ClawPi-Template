@@ -7,3 +7,8 @@
 2026-11-25 01:03:02,955 - VoiceAgent - INFO - Voice agent ready: {'speech_to_text': 'none', 'understanding': 'keywords', 'voice': 'print'}
 2026-11-25 01:03:18,899 - VoiceAgent - INFO - Voice agent ready: {'speech_to_text': 'none', 'understanding': 'keywords', 'voice': 'print'}
 2026-11-25 01:03:18,902 - VoiceAgent - INFO - reply: I turned left 90 degrees.  actions: [{'command': 'turn', 'arguments': {'degrees': 90}, 'result': 'I turned left 90 degrees.'}]
+2026-11-25 02:31:26,744 - VoiceAgent - INFO - Voice agent ready: {'speech_to_text': 'none', 'understanding': 'keywords', 'voice': 'piper'}
+2026-11-25 02:31:59,182 - VoiceAgent - INFO - Voice agent ready: {'speech_to_text': 'none', 'understanding': 'keywords', 'voice': 'piper'}
+2026-11-25 02:31:59,184 - VoiceAgent - INFO - say: Piper voice installed and working.
+2026-11-25 02:46:30,889 - VoiceAgent - INFO - Voice agent ready: {'speech_to_text': 'none', 'understanding': 'keywords', 'voice': 'piper'}
+2026-11-25 02:46:30,891 - VoiceAgent - INFO - say: Hello my name is Wally
