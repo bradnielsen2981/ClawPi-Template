@@ -202,6 +202,7 @@ var DESCRIBE = {
         if (!data.found) { return nothing(); }
         var parts = [];
         if (data.angle !== undefined) { parts.push(chip('angle ' + data.angle + '°', 'chip-found'), chip('offset ' + data.offset + 'px')); }
+        if (data.segments && data.segments.length) { parts.push(chip(data.segments.length + ' straight lines', 'chip-found')); }
         if (data.crossing) { parts.push(chip('intersection at y=' + data.crossing.y, 'chip-found')); }
         return parts.join(' ');
     },
