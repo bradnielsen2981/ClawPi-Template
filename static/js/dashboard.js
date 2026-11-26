@@ -1,10 +1,13 @@
 /* This is your dashboard JavaScript, it has been embedded into dashboard.html */
 
 //---LOAD AND SHUTDOWN THE ROBOT------------------------------------------------------
+// The camera, cards and controls (#dashboard) only show once the robot has finished loading
 function hide_dashboard()
 {
+    dashboard.style.display = "none";
     videofeed.innerHTML = ' ';
-    load_robot_button.style.display = "block";
+    end_hold();
+    load_robot_button.style.display = "inline-flex";
     robot_buttons.style.display = "none";
     shutdown_robot_button.style.display = "none";
     camera_fps.textContent = "offline";
@@ -13,9 +16,10 @@ function hide_dashboard()
 function show_dashboard()
 {
     loader.style.display = 'none';
+    dashboard.style.display = "";
     videofeed.innerHTML = '<img src="/videofeed" class="videofeed" alt="Robot camera">';
     robot_buttons.style.display = "flex";
-    shutdown_robot_button.style.display = "block";
+    shutdown_robot_button.style.display = "inline-flex";
     load_robot_button.style.display = "none";
     start_polling();
 }
@@ -30,7 +34,17 @@ function load_robot()
         new_ajax_helper('/load_robot', load_robot_handler);
     }
 }
-function load_robot_handler(response) { robot_loaded = 1; show_dashboard(); }
+function load_robot_handler(response)
+{
+    if (response.message == 'robot loaded') {
+        robot_loaded = 1;
+        show_dashboard();
+    } else { // load failed or no longer logged in
+        loader.style.display = 'none';
+        load_robot_button.style.display = "inline-flex";
+        check_logged_in(response);
+    }
+}
 
 shutdown_robot_button.onclick = shutdown_robot;
 function shutdown_robot()
@@ -44,8 +58,23 @@ function shutdown_robot()
 }
 function shutdown_robot_handler(response)
 {
-    load_robot_button.style.display = "block"; robot_loaded = 0;
+    load_robot_button.style.display = "inline-flex"; robot_loaded = 0;
 }
+
+//---ONE USER AT A TIME--------------------------------------------------------------
+// The server logs this browser out if it goes quiet, so keep telling it we're still here
+function check_logged_in(response)
+{
+    if (response && response.message == 'not logged in') { window.location = '/'; }
+}
+async function heartbeat()
+{
+    try {
+        var response = await fetch('/heartbeat', { method: 'POST' });
+        if (response.status == 401) { window.location = '/'; }
+    } catch (error) { }
+}
+setInterval(heartbeat, 15000);
 
 //---SENDING TO THE SERVER------------------------------------------------------------
 // Posts form fields to a Flask route and returns its JSON reply (or {message: ...} if it failed)
@@ -55,21 +84,101 @@ async function post(url, fields)
     for (var key in fields) { form.append(key, fields[key]); }
     try {
         var response = await fetch(url, { method: 'POST', body: form });
-        return await response.json();
+        var reply = await response.json();
+        check_logged_in(reply);
+        return reply;
     } catch (error) {
         return { message: 'request failed: ' + error };
     }
 }
 
 //---CAMERA TILT AND PAN--------------------------------------------------------------
-document.querySelectorAll('.camera-move').forEach(function (button) {
-    button.addEventListener('click', async function () {
-        var reply = await post('/camera_move', { direction: button.dataset.direction });
-        if (reply.pan !== undefined) {
-            camera_angles.textContent = 'pan ' + reply.pan + '°  tilt ' + reply.tilt + '°';
-        }
+// Tilt and pan are hold-down buttons (below). Centre is a normal click.
+function show_camera_angles(reply)
+{
+    if (reply && reply.pan !== undefined) {
+        camera_angles.textContent = 'pan ' + reply.pan + '°  tilt ' + reply.tilt + '°';
+    }
+}
+camera_centre_button.onclick = async function () {
+    end_hold();
+    show_camera_angles(await post('/camera_centre', {}));
+};
+
+//---HOLD-DOWN BUTTONS (movement, claw, camera)---------------------------------------
+// While a .hold-btn is held its action is sent every HOLD_RESEND_MS. Letting go sends /release (stop).
+// If the robot hears nothing for 3 seconds it stops by itself, so a lost release can't leave it running.
+var HOLD_RESEND_MS = 500;
+var held = null;              // {button, timer} of the button being held
+var hold_seq = Date.now();    // numbers every hold/release so the robot ignores one that arrives late
+
+async function send_hold(url, fields)
+{
+    fields.seq = ++hold_seq;
+    var reply = await post(url, fields);
+    show_camera_angles(reply);
+    return reply;
+}
+
+function start_hold(button)
+{
+    if (robot_loaded != 1 || (held && held.button === button)) { return; }
+    if (held) { clearInterval(held.timer); held.button.classList.remove('holding'); }
+    var action = button.dataset.action;
+    button.classList.add('holding');
+    held = { button: button, timer: setInterval(function () { send_hold('/hold', { action: action }); }, HOLD_RESEND_MS) };
+    send_hold('/hold', { action: action });
+}
+
+function end_hold()
+{
+    if (!held) { return; }
+    clearInterval(held.timer);
+    held.button.classList.remove('holding');
+    held = null;
+    send_hold('/release', {});
+}
+
+document.querySelectorAll('.hold-btn').forEach(function (button) {
+    // Mouse, touch and pen. Capturing the pointer means the release is seen even off the button.
+    button.addEventListener('pointerdown', function (event) {
+        if (event.button !== 0) { return; }
+        event.preventDefault();
+        button.setPointerCapture(event.pointerId);
+        start_hold(button);
+    });
+    ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(function (name) {
+        button.addEventListener(name, function () { if (held && held.button === button) { end_hold(); } });
+    });
+    button.addEventListener('contextmenu', function (event) { event.preventDefault(); }); // long press on a phone
+    // Keyboard: hold Space or Enter on a focused button
+    button.addEventListener('keydown', function (event) {
+        if (event.key === ' ' || event.key === 'Enter') { event.preventDefault(); if (!event.repeat) { start_hold(button); } }
+    });
+    button.addEventListener('keyup', function (event) {
+        if ((event.key === ' ' || event.key === 'Enter') && held && held.button === button) { end_hold(); }
     });
 });
+
+// Arrow keys pan and tilt the camera for as long as they are held
+var ARROW_KEYS = { ArrowUp: 'camera_up', ArrowDown: 'camera_down', ArrowLeft: 'camera_left', ArrowRight: 'camera_right' };
+function typing_in(target) { return target.closest('input, select, textarea, [contenteditable]'); }
+document.addEventListener('keydown', function (event) {
+    var action = ARROW_KEYS[event.key];
+    if (!action || robot_loaded != 1 || typing_in(event.target)) { return; }
+    event.preventDefault(); // don't scroll the page
+    if (!event.repeat) { start_hold(document.querySelector('.hold-btn[data-action="' + action + '"]')); }
+});
+document.addEventListener('keyup', function (event) {
+    var action = ARROW_KEYS[event.key];
+    if (action && held && held.button.dataset.action === action) { end_hold(); }
+});
+
+// Stop if the window loses focus or the tab is hidden while something is held
+window.addEventListener('blur', end_hold);
+document.addEventListener('visibilitychange', function () { if (document.hidden) { end_hold(); } });
+
+move_stop_button.onclick = function () { end_hold(); post('/stop', {}); };
 
 //---DETECTION BUTTONS----------------------------------------------------------------
 // Each detection is a .detect-group: a toggle button plus a dropdown of options (checkboxes or radios).
@@ -154,9 +263,17 @@ stop_detection_button.onclick = function () {
 };
 
 //---DETECTION DATA CARD--------------------------------------------------------------
-var poll_timer = null;
-function start_polling() { if (!poll_timer) { poll_detection_data(); poll_timer = setInterval(poll_detection_data, 500); } }
-function stop_polling() { clearInterval(poll_timer); poll_timer = null; }
+var poll_timer = null, sensor_timer = null;
+function start_polling()
+{
+    if (!poll_timer) { poll_detection_data(); poll_timer = setInterval(poll_detection_data, 500); }
+    if (!sensor_timer) { poll_sensor_data(); sensor_timer = setInterval(poll_sensor_data, 1000); }
+}
+function stop_polling()
+{
+    clearInterval(poll_timer); poll_timer = null;
+    clearInterval(sensor_timer); sensor_timer = null;
+}
 
 async function poll_detection_data()
 {
@@ -242,6 +359,50 @@ function show_detection_data(tasks, data)
     }
     detection_raw.textContent = JSON.stringify(data, null, 2);
 }
+
+//---SENSORS CARD---------------------------------------------------------------------
+var LOW_VOLTAGE = 7.0; // volts, the chip turns red below this
+
+async function poll_sensor_data()
+{
+    try {
+        var response = await fetch('/sensor_data');
+        var reply = await response.json();
+        if (reply.loaded) { show_sensor_data(reply); }
+    } catch (error) { }
+}
+
+function show_sensor_data(reply)
+{
+    var v = reply.voltage;
+    sensor_voltage.textContent = v == null ? 'no reading' : v.toFixed(2) + ' V';
+    sensor_voltage.className = 'data-chip' + (v != null && v < LOW_VOLTAGE ? ' chip-low' : '');
+
+    var imu = reply.imu;
+    if (!imu) {
+        sensor_imu.innerHTML = '<span class="text-body-secondary">no reading</span>';
+    } else {
+        var deg = function (x) { return Math.round(x) + '°'; };
+        var xyz = function (a) { return a.map(function (x) { return x.toFixed(1); }).join(', '); };
+        sensor_imu.innerHTML = chip('roll ' + deg(imu.rpy[0])) + ' ' + chip('pitch ' + deg(imu.rpy[1])) + ' ' +
+                               chip('yaw ' + deg(imu.rpy[2])) + ' ' + chip('accel ' + xyz(imu.accel) + ' m/s²') + ' ' +
+                               chip('gyro ' + xyz(imu.gyro) + ' rad/s');
+    }
+
+    var line = reply.line;
+    if (document.activeElement !== line_colour_select) { line_colour_select.value = line.colour; }
+    if (!line.running) {
+        sensor_line.innerHTML = '<span class="text-body-secondary">turn on Detect Line to see it</span>';
+    } else if (!line.found) {
+        sensor_line.innerHTML = chip('no ' + line.colour.replace(/_/g, ' ') + ' line under the robot');
+    } else {
+        var text = line.colour.replace(/_/g, ' ') + ' line found';
+        if (line.angle != null) { text += ' · angle ' + line.angle + '° · offset ' + line.offset + 'px'; }
+        sensor_line.innerHTML = chip(text, 'chip-found');
+    }
+}
+
+line_colour_select.onchange = function () { post('/set_line_colour', { colour: line_colour_select.value }); };
 
 //---START----------------------------------------------------------------------------
 //hide or show dashboard based on initial value from server on page load

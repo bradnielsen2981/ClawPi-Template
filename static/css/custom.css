@@ -155,7 +155,7 @@ input[type="submit"]:hover, .button:hover { background: var(--app-accent-dark); 
 /*---------------------------------------------------------------------------
   BUTTONS
 ---------------------------------------------------------------------------*/
-.btn { font-weight: 500; }
+.btn { font-weight: 500; display: inline-flex; align-items: center; justify-content: center; } /* icons centred in every button */
 .btn i:last-child:not(:first-child) { margin-left: 0.4rem; } /* icon after the text */
 .btn i:first-child:not(:last-child) { margin-right: 0.4rem; } /* icon before the text */
 .btn-success { --bs-btn-bg: var(--app-accent); --bs-btn-border-color: var(--app-accent);

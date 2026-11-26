@@ -7,9 +7,12 @@ import cv2
 
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
-from clawpiinterface import ClawPi
+from clawpiinterface import (ClawPi, SERVO_LIMITS, CAMERA_PAN_SERVO_ID, CAMERA_TILT_SERVO_ID, CAMERA_PAN_TRIM,
+                             CAMERA_TILT_TRIM, CLAW_GRIP_SERVO_ID, CLAW_LIFT_SERVO_ID, CLAW_OPEN, CLAW_CLOSED,
+                             CLAW_LIFT_UP, CLAW_LIFT_DOWN)
 from camerainterface import CameraInterface
 from lidarinterface import LidarInterface
+from linefollowerinterface import LineFollowerInterface
 from mappinginterface import MappingInterface
 from loggerinterface import setup_logger
 
@@ -22,6 +25,50 @@ LED_COLOURS = {
 # Speeds used by the movement behaviours
 DRIVE_SPEED = 0.15 # m/s
 TURN_SPEED = 0.5   # rad/s
+
+# DASHBOARD HOLD CONTROLS -----------------------------------------------------------
+# A dashboard button keeps its action going while it is held: the browser re-sends the action every 0.5 s.
+# If nothing is heard for HOLD_TIMEOUT seconds (lost wifi, crashed tab, missed mouse release) the robot stops.
+HOLD_TIMEOUT = 3.0  # seconds
+HOLD_RATE_HZ = 20   # how often a held action is updated
+ORBIT_RADIUS = 0.3  # metres, distance to the point the robot orbits around (in front of it)
+DIAGONAL = DRIVE_SPEED * math.sqrt(0.5)
+
+# Held movements: (forward m/s, left m/s, anticlockwise rad/s)
+HOLD_DRIVES = {
+    'forward': (DRIVE_SPEED, 0, 0),         'reverse': (-DRIVE_SPEED, 0, 0),
+    'slide_left': (0, DRIVE_SPEED, 0),      'slide_right': (0, -DRIVE_SPEED, 0),
+    'diagonal_left': (DIAGONAL, DIAGONAL, 0), 'diagonal_right': (DIAGONAL, -DIAGONAL, 0),
+    'turn_left': (0, 0, TURN_SPEED),        'turn_right': (0, 0, -TURN_SPEED),
+    # Orbit: slide sideways while turning, so the robot keeps facing a point ORBIT_RADIUS in front of it
+    'orbit_left': (0, DRIVE_SPEED, -DRIVE_SPEED / ORBIT_RADIUS),
+    'orbit_right': (0, -DRIVE_SPEED, DRIVE_SPEED / ORBIT_RADIUS),
+    # Drive: forward while turning (a curve)
+    'drive_left': (DRIVE_SPEED, 0, TURN_SPEED), 'drive_right': (DRIVE_SPEED, 0, -TURN_SPEED),
+}
+
+# Held camera moves: (pan direction, tilt direction). Positive pan = left, positive tilt = up.
+CAMERA_SPEED = 60   # degrees per second while held
+CAMERA_LIMIT = 90   # never more than 90 degrees left/right/up/down
+HOLD_CAMERA = {'camera_left': (1, 0), 'camera_right': (-1, 0), 'camera_up': (0, 1), 'camera_down': (0, -1)}
+
+def _camera_range(servo_id, trim):
+    """The camera angles (degrees) a gimbal servo can really reach, inside +/- CAMERA_LIMIT."""
+    low, high = SERVO_LIMITS[servo_id]
+    to_angle = lambda pulse: (pulse - 1500) / 1000 * 90 - trim
+    return max(-CAMERA_LIMIT, to_angle(low)), min(CAMERA_LIMIT, to_angle(high))
+PAN_RANGE = _camera_range(CAMERA_PAN_SERVO_ID, CAMERA_PAN_TRIM)
+TILT_RANGE = _camera_range(CAMERA_TILT_SERVO_ID, CAMERA_TILT_TRIM)
+
+# Held claw moves: (servo, direction, lowest pulse, highest pulse, pulse if not moved yet)
+CLAW_SPEED = 500    # microseconds of servo pulse per second while held (about 1 s from closed to open)
+HOLD_CLAW = {
+    'claw_open':  (CLAW_GRIP_SERVO_ID, 1, CLAW_CLOSED, CLAW_OPEN, CLAW_OPEN),
+    'claw_close': (CLAW_GRIP_SERVO_ID, -1, CLAW_CLOSED, CLAW_OPEN, CLAW_OPEN),
+    'claw_raise': (CLAW_LIFT_SERVO_ID, 1, CLAW_LIFT_DOWN, CLAW_LIFT_UP, CLAW_LIFT_DOWN),
+    'claw_lower': (CLAW_LIFT_SERVO_ID, -1, CLAW_LIFT_DOWN, CLAW_LIFT_UP, CLAW_LIFT_DOWN),
+}
+HOLD_ACTIONS = set(HOLD_DRIVES) | set(HOLD_CAMERA) | set(HOLD_CLAW)
 
 class SilentSound():
     """
@@ -48,6 +95,10 @@ class RobotInterface(ClawPi):
         and waits for hardware to warm up.
         """
         self.command = "Ready" # keep track of user commands
+        self._hold = (None, 0)  # (held dashboard action, time it must stop by)
+        self._hold_lock = threading.Lock()
+        self._hold_quit = threading.Event()
+        self.camera_pan, self.camera_tilt = 0, 0
         self.show_camera = False # only turn this on to see the camera window, will slow down performance when using VNC
         self.logger = logging.getLogger('Robot')
         setup_logger(self.logger, '../logs/robot.log')
@@ -66,11 +117,19 @@ class RobotInterface(ClawPi):
         self.CAMERA = CameraInterface(node=self.node) # shares the robot's ROS connection
         self.CAMERA.start()
 
+        # 4 channel line follower under the front of the robot (read over I2C, see linefollowerinterface.py).
+        # If it can't be used, LINE_FOLLOWER.available is False and its readings are None.
+        self.LINE_FOLLOWER = LineFollowerInterface(logger=self.logger)
+
         # The lidar and mapping interfaces are only created the first time they are used (see LIDAR and MAPPING)
         self._lidar = None
         self._mapping = None
         self._interface_lock = threading.Lock() # Flask threads could otherwise create two at once
         self.starttime = time.time() # when did robot get created
+
+        # Safety loop for the dashboard's hold-down buttons (see hold_action)
+        self._hold_thread = threading.Thread(target=self._hold_loop, daemon=True)
+        self._hold_thread.start()
         return
 
     @property
@@ -111,35 +170,103 @@ class RobotInterface(ClawPi):
         """Nearest obstacle on the right in metres."""
         return self.LIDAR.get_distance_right(width)
 
+    # Line follower shortcuts, so robot.get_line_sensors() works without going through robot.LINE_FOLLOWER
+    def get_line_sensors(self):
+        """[far left, centre left, centre right, far right], True where the line is seen (None if unreadable)."""
+        return self.LINE_FOLLOWER.read()
+
+    def get_line_position(self):
+        """Where the line is under the robot: -1.0 far left to 1.0 far right, None if it can't be seen."""
+        return self.LINE_FOLLOWER.get_line_position()
+
     def stop_command(self):
         """
         Safely stops the robot's current movement process and resets the command state.
         Call this anytime you need to abort a running while-loop instantly.
         """
         self.command = "Ready"
+        with self._hold_lock:
+            self._hold = (None, 0)
         self.stop()
         return
 
-    def nudge_camera(self, direction, step=10):
+    #---DASHBOARD HOLD CONTROLS-------------------------------------------------------
+    def hold_action(self, action):
         """
-        Moves the camera a small step from where it is now (used by the dashboard's pan/tilt buttons).
+        Starts (or keeps going) a dashboard hold-down action, e.g. 'forward', 'camera_up' or 'claw_open'.
+        The action stops by itself HOLD_TIMEOUT seconds after the last call, so call this again
+        (the dashboard does every 0.5 s) for as long as the button is held, and release_hold() when let go.
 
-        Args:
-            direction (str): 'up', 'down', 'left', 'right' or 'centre'.
-            step (int, optional): Degrees to move. Defaults to 10.
+        Returns:
+            bool: False if the action isn't known.
+        """
+        if action not in HOLD_ACTIONS:
+            return False
+        with self._hold_lock:
+            self._hold = (action, time.time() + HOLD_TIMEOUT)
+        return True
+
+    def release_hold(self, deadline=None):
+        """Stops the held dashboard action. Wheels stop; the camera and claw stay where they are."""
+        with self._hold_lock:
+            if deadline is not None and self._hold[1] != deadline:
+                return # a newer press arrived, leave it running
+            self._hold = (None, 0)
+        self.stop()
+
+    def _hold_loop(self):
+        """Runs in the background: moves whatever is held, and stops it if the dashboard goes quiet."""
+        period = 1.0 / HOLD_RATE_HZ
+        while not self._hold_quit.wait(period):
+            with self._hold_lock:
+                action, deadline = self._hold
+            if action is None:
+                continue
+            if time.time() > deadline:
+                self.logger.warning(f"{action} stopped: no word from the dashboard for {HOLD_TIMEOUT} s")
+                self.release_hold(deadline)
+                continue
+            try:
+                self._hold_step(action, period)
+            except Exception as e:
+                self.logger.error(f"{action} failed: {e}")
+                self.release_hold()
+
+    def _hold_step(self, action, period):
+        """One small step of a held action."""
+        if action in HOLD_DRIVES:
+            self.set_velocity(*HOLD_DRIVES[action]) # resent every step so the wheels keep going
+        elif action in HOLD_CAMERA:
+            pan_dir, tilt_dir = HOLD_CAMERA[action]
+            step = CAMERA_SPEED * period
+            pan = max(PAN_RANGE[0], min(PAN_RANGE[1], self.camera_pan + pan_dir * step))
+            tilt = max(TILT_RANGE[0], min(TILT_RANGE[1], self.camera_tilt + tilt_dir * step))
+            if (pan, tilt) != (self.camera_pan, self.camera_tilt): # nothing to send once at a limit
+                self.camera_pan, self.camera_tilt = pan, tilt
+                self.set_camera(pan, tilt, duration=period)
+        elif action in HOLD_CLAW:
+            servo, direction, low, high, start = HOLD_CLAW[action]
+            pulse = self.get_servo_position(servo) or start
+            new_pulse = max(low, min(high, pulse + direction * CLAW_SPEED * period))
+            if new_pulse != pulse:
+                self.set_servo(servo, new_pulse, duration=period)
+
+    def get_camera_angles(self):
+        """The camera's current (pan, tilt) in whole degrees."""
+        return round(self.camera_pan), round(self.camera_tilt)
+
+    def centre_camera_view(self):
+        """
+        Points the camera straight ahead (pan 0, tilt 0) and remembers it, so the dashboard's
+        hold-down pan/tilt buttons carry on from the centre. Ends any held dashboard action first.
 
         Returns:
             tuple: The camera's new (pan, tilt) in degrees.
         """
-        pan, tilt = getattr(self, 'camera_pan', 0), getattr(self, 'camera_tilt', 0)
-        if direction == 'centre':
-            pan, tilt = 0, 0
-        else:
-            pan += {'left': step, 'right': -step}.get(direction, 0)
-            tilt += {'up': step, 'down': -step}.get(direction, 0)
-        self.camera_pan, self.camera_tilt = max(-90, min(90, pan)), max(-90, min(90, tilt))
-        self.set_camera(self.camera_pan, self.camera_tilt, duration=0.2)
-        return self.camera_pan, self.camera_tilt
+        self.release_hold()
+        self.camera_pan, self.camera_tilt = 0, 0
+        self.set_camera(0, 0, duration=0.2)
+        return self.get_camera_angles()
 
     def set_led_colour(self, colour=None):
         """
@@ -470,6 +597,8 @@ class RobotInterface(ClawPi):
         and clears the LEDs. Always call this when exiting the script to prevent hardware damage.
         """
         self.command = "Shutdown"
+        self._hold_quit.set() # end the dashboard safety loop before the ROS connection goes
+        self._hold_thread.join(timeout=1.0)
         self.SOUND.stop_listening() # no more voice commands once the robot is shutting down (it can still speak)
         self.stop_command()
         # Stop in reverse order of creation: mapping uses the lidar and camera, which all use the ROS connection
@@ -478,6 +607,7 @@ class RobotInterface(ClawPi):
         if self._lidar is not None:
             self._lidar.stop()
         self.CAMERA.stop()
+        self.LINE_FOLLOWER.close()
         self.turn_off_led()
         super().shutdown() # releases the ROS connection
         return

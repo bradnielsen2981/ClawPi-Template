@@ -23,16 +23,17 @@
     </div>
     <div class="ms-auto d-flex align-items-center gap-2">
         <div id="loader" class="loader"></div>
-        <button id="load_robot_button" type="button" class="btn btn-success rounded-pill px-4">
+        <button id="load_robot_button" type="button" title="Start the robot" aria-label="Load the robot" class="btn btn-success rounded-pill px-4" {% if robot_loaded %}style="display:none"{% endif %}>
             <i class="fa-solid fa-play"></i> Load Robot
         </button>
-        <button id="shutdown_robot_button" type="button" class="btn btn-outline-danger rounded-pill px-4">
+        <button id="shutdown_robot_button" type="button" title="Stop the robot and turn off its camera" aria-label="Shut down the robot" class="btn btn-outline-danger rounded-pill px-4" {% if not robot_loaded %}style="display:none"{% endif %}>
             <i class="fa-solid fa-power-off"></i> Shutdown Robot
         </button>
     </div>
 </div>
 
-<div id="dashboard" class="row g-4">
+{# The camera, cards and controls stay hidden until the robot has finished loading #}
+<div id="dashboard" class="row g-4" {% if not robot_loaded %}style="display:none"{% endif %}>
 
     <!-- FIRST COLUMN (2/3): camera, controls and detection data -->
     <div class="col-lg-8 d-flex flex-column gap-4">
@@ -61,18 +62,18 @@
                             <div class="control-group">
                                 <span class="control-label">Tilt</span>
                                 <div class="btn-group" role="group" aria-label="Camera tilt">
-                                    <button type="button" class="btn btn-outline-secondary camera-move" data-direction="up" title="Tilt up" aria-label="Tilt up"><i class="fa-solid fa-chevron-up"></i></button>
-                                    <button type="button" class="btn btn-outline-secondary camera-move" data-direction="down" title="Tilt down" aria-label="Tilt down"><i class="fa-solid fa-chevron-down"></i></button>
+                                    <button type="button" class="btn btn-outline-secondary hold-btn" data-action="camera_up" title="Tilt the camera up (hold)" aria-label="Tilt the camera up (hold down)"><i class="fa-solid fa-chevron-up"></i></button>
+                                    <button type="button" class="btn btn-outline-secondary hold-btn" data-action="camera_down" title="Tilt the camera down (hold)" aria-label="Tilt the camera down (hold down)"><i class="fa-solid fa-chevron-down"></i></button>
                                 </div>
                             </div>
                             <div class="control-group">
                                 <span class="control-label">Pan</span>
                                 <div class="btn-group" role="group" aria-label="Camera pan">
-                                    <button type="button" class="btn btn-outline-secondary camera-move" data-direction="left" title="Pan left" aria-label="Pan left"><i class="fa-solid fa-chevron-left"></i></button>
-                                    <button type="button" class="btn btn-outline-secondary camera-move" data-direction="right" title="Pan right" aria-label="Pan right"><i class="fa-solid fa-chevron-right"></i></button>
+                                    <button type="button" class="btn btn-outline-secondary hold-btn" data-action="camera_left" title="Pan the camera left (hold)" aria-label="Pan the camera left (hold down)"><i class="fa-solid fa-chevron-left"></i></button>
+                                    <button type="button" class="btn btn-outline-secondary hold-btn" data-action="camera_right" title="Pan the camera right (hold)" aria-label="Pan the camera right (hold down)"><i class="fa-solid fa-chevron-right"></i></button>
                                 </div>
                             </div>
-                            <button type="button" class="btn btn-outline-secondary camera-move" data-direction="centre" title="Point the camera straight ahead">
+                            <button id="camera_centre_button" type="button" class="btn btn-outline-secondary" title="Point the camera straight ahead" aria-label="Point the camera straight ahead">
                                 <i class="fa-solid fa-crosshairs"></i> Centre
                             </button>
                             <span id="camera_angles" class="small text-body-secondary"></span>
@@ -86,8 +87,8 @@
 
                             <!-- Colour: several colours, one checked per frame -->
                             <div class="btn-group detect-group" data-task="colour">
-                                <button type="button" class="btn btn-outline-secondary detect-toggle"><i class="fa-solid fa-palette"></i> Detect Colour</button>
-                                <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                                <button type="button" class="btn btn-outline-secondary detect-toggle" title="Turn colour detection on or off" aria-label="Turn colour detection on or off"><i class="fa-solid fa-palette"></i> Detect Colour</button>
+                                <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" title="Choose colour detection options" aria-label="Choose colour detection options">
                                     <span class="visually-hidden">Choose colours</span>
                                 </button>
                                 <div class="dropdown-menu">
@@ -103,8 +104,8 @@
 
                             <!-- Line: lines and/or intersections -->
                             <div class="btn-group detect-group" data-task="line">
-                                <button type="button" class="btn btn-outline-secondary detect-toggle"><i class="fa-solid fa-route"></i> Detect Line</button>
-                                <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                                <button type="button" class="btn btn-outline-secondary detect-toggle" title="Turn line detection on or off" aria-label="Turn line detection on or off"><i class="fa-solid fa-route"></i> Detect Line</button>
+                                <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" title="Choose line detection options" aria-label="Choose line detection options">
                                     <span class="visually-hidden">Choose line options</span>
                                 </button>
                                 <div class="dropdown-menu">
@@ -116,8 +117,8 @@
 
                             <!-- Object: one YOLO model at a time -->
                             <div class="btn-group detect-group" data-task="object">
-                                <button type="button" class="btn btn-outline-secondary detect-toggle"><i class="fa-solid fa-cube"></i> Detect Object</button>
-                                <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                                <button type="button" class="btn btn-outline-secondary detect-toggle" title="Turn object detection on or off" aria-label="Turn object detection on or off"><i class="fa-solid fa-cube"></i> Detect Object</button>
+                                <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" title="Choose object detection options" aria-label="Choose object detection options">
                                     <span class="visually-hidden">Choose model</span>
                                 </button>
                                 <div class="dropdown-menu">
@@ -133,8 +134,8 @@
 
                             <!-- Pose: which gestures to report -->
                             <div class="btn-group detect-group" data-task="pose">
-                                <button type="button" class="btn btn-outline-secondary detect-toggle"><i class="fa-solid fa-person-walking"></i> Detect Pose</button>
-                                <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                                <button type="button" class="btn btn-outline-secondary detect-toggle" title="Turn pose detection on or off" aria-label="Turn pose detection on or off"><i class="fa-solid fa-person-walking"></i> Detect Pose</button>
+                                <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" title="Choose pose detection options" aria-label="Choose pose detection options">
                                     <span class="visually-hidden">Choose poses</span>
                                 </button>
                                 <div class="dropdown-menu">
@@ -148,11 +149,11 @@
                             </div>
 
                             <!-- Depth: no depth camera fitted yet -->
-                            <button type="button" class="btn btn-outline-secondary" disabled title="No depth camera fitted">
+                            <button type="button" class="btn btn-outline-secondary" disabled title="No depth camera fitted" aria-label="Depth camera (no depth camera fitted)">
                                 <i class="fa-solid fa-layer-group"></i> Depth Camera
                             </button>
 
-                            <button id="stop_detection_button" type="button" class="btn btn-outline-danger ms-sm-auto">
+                            <button id="stop_detection_button" type="button" class="btn btn-outline-danger ms-sm-auto" title="Stop all detection" aria-label="Stop all detection">
                                 <i class="fa-solid fa-ban"></i> Stop all
                             </button>
                         </div>
@@ -179,16 +180,87 @@
         </div>
     </div>
 
-    <!-- SECOND COLUMN (1/3): movement (not built yet) -->
-    <div class="col-lg-4">
+    <!-- SECOND COLUMN (1/3): movement and sensors -->
+    <div class="col-lg-4 d-flex flex-column gap-4">
+
+        <!-- Movement: every button here works while held down, and the robot stops when it is let go -->
         <div id="movement_tab" class="card">
-            <div class="card-header">
+            <div class="card-header d-flex align-items-center">
                 <h2 class="card-title"><i class="fa-solid fa-gamepad"></i> Movement</h2>
+                <span class="small text-body-secondary ms-auto">hold to move</span>
             </div>
             <div class="card-body">
-                <div class="empty-state">
-                    <i class="fa-solid fa-arrows-up-down-left-right"></i>
-                    <p>Movement buttons coming soon.</p>
+                {# (action, Font Awesome icon, extra icon class, label) #}
+                {% set grid = [('diagonal_left', 'fa-arrow-up', 'fa-rotate-by diag-left', 'Slide diagonally forward left'),
+                               ('forward', 'fa-arrow-up', '', 'Drive forward'),
+                               ('diagonal_right', 'fa-arrow-up', 'fa-rotate-by diag-right', 'Slide diagonally forward right'),
+                               ('slide_left', 'fa-arrow-left', '', 'Slide left'),
+                               ('stop', 'fa-stop', '', 'Stop'),
+                               ('slide_right', 'fa-arrow-right', '', 'Slide right'),
+                               ('turn_left', 'fa-rotate-left', '', 'Turn left on the spot'),
+                               ('reverse', 'fa-arrow-down', '', 'Reverse'),
+                               ('turn_right', 'fa-rotate-right', '', 'Turn right on the spot')] %}
+                <div class="move-grid">
+                    {% for action, icon, extra, label in grid %}
+                    {% if action == 'stop' %}
+                    <button id="move_stop_button" type="button" class="btn btn-danger" title="{{ label }}" aria-label="{{ label }} all movement">
+                        <i class="fa-solid {{ icon }}" aria-hidden="true"></i>
+                    </button>
+                    {% else %}
+                    <button type="button" class="btn btn-outline-secondary hold-btn" data-action="{{ action }}" title="{{ label }} (hold)" aria-label="{{ label }} (hold down)">
+                        <i class="fa-solid {{ icon }} {{ extra }}" aria-hidden="true"></i>
+                    </button>
+                    {% endif %}
+                    {% endfor %}
+                </div>
+
+                {% set curves = [('orbit_left', 'fa-arrows-spin', 'fa-flip-horizontal', 'Orbit Left', 'Orbit left around a point in front'),
+                                 ('orbit_right', 'fa-arrows-spin', '', 'Orbit Right', 'Orbit right around a point in front'),
+                                 ('drive_left', 'fa-diamond-turn-right', 'fa-flip-horizontal', 'Drive Left', 'Drive forward curving left'),
+                                 ('drive_right', 'fa-diamond-turn-right', '', 'Drive Right', 'Drive forward curving right')] %}
+                {% set claw = [('claw_open', 'fa-hand', '', 'Open Claw', 'Open the claw'),
+                               ('claw_close', 'fa-hand-back-fist', '', 'Close Claw', 'Close the claw'),
+                               ('claw_raise', 'fa-angles-up', '', 'Raise Claw', 'Raise the claw'),
+                               ('claw_lower', 'fa-angles-down', '', 'Lower Claw', 'Lower the claw')] %}
+                {% for heading, buttons in [('Curves', curves), ('Claw', claw)] %}
+                <div class="control-section">
+                    <span class="control-heading">{{ heading }}</span>
+                    <div class="move-pairs">
+                        {% for action, icon, extra, label, help in buttons %}
+                        <button type="button" class="btn btn-outline-secondary hold-btn" data-action="{{ action }}" title="{{ help }} (hold)" aria-label="{{ help }} (hold down)">
+                            <i class="fa-solid {{ icon }} {{ extra }}" aria-hidden="true"></i> {{ label }}
+                        </button>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Sensors -->
+        <div id="sensors_card" class="card">
+            <div class="card-header d-flex align-items-center">
+                <h2 class="card-title"><i class="fa-solid fa-microchip"></i> Sensors</h2>
+            </div>
+            <div class="card-body">
+                <div class="data-row">
+                    <span class="data-label"><i class="fa-solid fa-car-battery fa-fw"></i> Voltage</span>
+                    <span class="data-values"><span id="sensor_voltage" class="data-chip">--</span></span>
+                </div>
+                <div class="data-row">
+                    <span class="data-label"><i class="fa-solid fa-compass fa-fw"></i> IMU</span>
+                    <span class="data-values" id="sensor_imu"><span class="text-body-secondary">no reading</span></span>
+                </div>
+                <div class="data-row">
+                    <span class="data-label"><i class="fa-solid fa-grip-lines fa-fw"></i> Bottom line</span>
+                    <span class="data-values flex-column">
+                        <select id="line_colour_select" class="form-select form-select-sm" aria-label="Colour of the line to look for">
+                            {% for value, label, swatch in colours %}
+                            <option value="{{ value }}" {% if value == 'black' %}selected{% endif %}>{{ label }} line</option>
+                            {% endfor %}
+                        </select>
+                        <span id="sensor_line"><span class="text-body-secondary">turn on Detect Line to see it</span></span>
+                    </span>
                 </div>
             </div>
         </div>

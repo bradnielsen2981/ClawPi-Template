@@ -1,7 +1,7 @@
 import smbus
 import time
 
-class MLX90614():
+class InfraredtempInterface():
 
     MLX90614_RAWIR1=0x04
     MLX90614_RAWIR2=0x05

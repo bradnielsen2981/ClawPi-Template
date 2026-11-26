@@ -4,7 +4,7 @@ from flask import *
 from interfaces.databaseinterface import Database
 from interfaces.hashinginterface import *
 from robot import Robot
-import logging, time, sys, os, signal
+import logging, time, sys, os, signal, threading, uuid
 
 #---SETUP LOGGING------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -20,34 +20,72 @@ logging.basicConfig(
 #---CONFIGURE APP---------------------------------------------------
 app = Flask(__name__)
 sys.tracebacklimit = 10
-app.config['SECRET_KEY'] = "Type in a secret line of text"
+app.config['SECRET_KEY'] = "ClawPi2026"
 
 #---EMBED OBJECTS---------------------------------------------------
 DATABASE = Database("databases/test.db", app.logger)
 ROBOT = None
 
+#---ONE USER AT A TIME-----------------------------------------------
+# Only one browser can be logged in. The logged in browser holds ACTIVE_USER['token'].
+# If it goes quiet for LOGIN_TIMEOUT seconds (tab closed without logging out) the lock is released.
+LOGIN_TIMEOUT = 60
+ACTIVE_USER = {'token': None, 'last_seen': 0}
+ACTIVE_USER_LOCK = threading.Lock()
+PUBLIC_ROUTES = ('login', 'logout', 'static')
+
+def someone_else_logged_in():
+    return ACTIVE_USER['token'] is not None and time.time() - ACTIVE_USER['last_seen'] < LOGIN_TIMEOUT
+
+# Runs before every request: only the logged in browser can use the app
+@app.before_request
+def check_active_user():
+    if request.endpoint in PUBLIC_ROUTES:
+        return
+    with ACTIVE_USER_LOCK:
+        is_active = 'token' in session and session['token'] == ACTIVE_USER['token'] and someone_else_logged_in()
+        if is_active:
+            ACTIVE_USER['last_seen'] = time.time()
+    if not is_active:
+        session.clear()
+        if request.method == 'POST': # dashboard buttons
+            return jsonify({'message':'not logged in'}), 401
+        return redirect('/') # pages
+
 #---VIEW FUNCTIONS----------------------------------------------------
 # Backdoor
 @app.route('/backdoor')
 def backdoor():
-    if DATABASE:
-        results = DATABASE.ViewQuery("SELECT * FROM users")
+    if session.get('permission') != 'admin': # admin users only
+        return jsonify({'message':'admin permission required'}), 403
+    results = DATABASE.ViewQuery("SELECT * FROM users") if DATABASE else []
     return jsonify(results)
 
 # Login as the admin user
 @app.route('/', methods=["GET","POST"])
 def login():
-    if 'userid' in session:
+    if 'token' in session and session['token'] == ACTIVE_USER['token']:
         return redirect('/dashboard')
     app.logger.info("Login")
+    message = None
     if request.method == "POST":
         email = request.form['email']
         password = request.form['password']
-        if email == 'admin@admin' and password == 'admin': 
-            session['userid'] = 1
-            session['permission'] = 'admin'
-            return redirect('./dashboard') #takes 3 seconds for the CAMERA to start
-    return render_template("login.html")
+        if email == 'admin@admin' and password == 'admin':
+            with ACTIVE_USER_LOCK:
+                if someone_else_logged_in():
+                    message = "Another user is already logged in to the robot. Try again when they log out."
+                else:
+                    session.clear()
+                    session['userid'] = 1
+                    session['permission'] = 'admin'
+                    session['token'] = uuid.uuid4().hex
+                    ACTIVE_USER['token'] = session['token']
+                    ACTIVE_USER['last_seen'] = time.time()
+                    return redirect('./dashboard') #takes 3 seconds for the CAMERA to start
+        else:
+            message = "Incorrect email or password."
+    return render_template("login.html", data=message)
 
 # Dashboard for the robot
 @app.route('/dashboard', methods=['GET','POST'])
@@ -77,7 +115,7 @@ def load_robot():
 def look_down():
     app.logger.info('Looking Down')
     if ROBOT:
-        #ROBOT.SOUND.say("Looking Down")
+        pass #ROBOT.SOUND.say("Looking Down")
     return jsonify({'message':'look down'})
 
 # Stop
@@ -85,9 +123,77 @@ def look_down():
 def stop():
     app.logger.info('stopping robot')
     if ROBOT:
-        ROBOT.stop_command()
-        ROBOT.stop()
+        ROBOT.stop_command() # also ends any held dashboard button
     return jsonify({'message':'stop'})
+
+# DASHBOARD HOLD-DOWN BUTTONS (movement, claw, camera pan/tilt)----------------------------
+# The dashboard sends /hold every 0.5 s while a button is held and /release when it is let go.
+# If the robot hears nothing for 3 seconds it stops by itself (see HOLD_TIMEOUT in robotinterface.py).
+# Each request carries a rising 'seq' number. Requests can arrive out of order, so an older one is ignored:
+# a late /hold must never restart the robot after the button was released.
+HOLD_SEQ = {'last': 0}
+HOLD_SEQ_LOCK = threading.Lock()
+
+def is_newest_hold_request():
+    try:
+        seq = int(request.form.get('seq', 0))
+    except ValueError:
+        return False
+    with HOLD_SEQ_LOCK:
+        if seq and seq <= HOLD_SEQ['last']:
+            return False
+        HOLD_SEQ['last'] = max(seq, HOLD_SEQ['last'])
+        return True
+
+@app.route('/hold', methods=['POST'])
+def hold():
+    if not ROBOT:
+        return jsonify({'message':'robot not loaded'})
+    if not is_newest_hold_request():
+        return jsonify({'message':'old request ignored'})
+    action = request.form.get('action', '')
+    if not ROBOT.hold_action(action):
+        return jsonify({'message':'unknown action'}), 400
+    pan, tilt = ROBOT.get_camera_angles()
+    return jsonify({'message':'holding', 'action':action, 'pan':pan, 'tilt':tilt})
+
+@app.route('/release', methods=['POST'])
+def release():
+    if not ROBOT:
+        return jsonify({'message':'robot not loaded'})
+    if not is_newest_hold_request():
+        return jsonify({'message':'old request ignored'})
+    ROBOT.release_hold()
+    pan, tilt = ROBOT.get_camera_angles()
+    return jsonify({'message':'released', 'pan':pan, 'tilt':tilt})
+
+# SENSORS CARD---------------------------------------------------------------------------
+# Battery voltage, IMU and the line the camera sees at the bottom of the frame (polled by the dashboard)
+@app.route('/sensor_data', methods=['GET'])
+def sensor_data():
+    robot = ROBOT
+    if not robot:
+        return jsonify({'loaded':False})
+    imu = robot.get_imu_sensor(timeout=0) # timeout=0: use the latest reading, don't wait
+    camera = robot.CAMERA
+    line = camera.get_detection_data().get('detect_line', {})
+    return jsonify({'loaded':True,
+                    'voltage':robot.get_battery_voltage(timeout=0),
+                    'imu':imu and {'rpy':imu['rpy'], 'accel':imu['accel'], 'gyro':imu['gyro']},
+                    'line':{'colour':camera.detectors['detect_line'].colour,
+                            'running':'detect_line' in camera.detection_tasks,
+                            'found':bool(line.get('found')), 'angle':line.get('angle'), 'offset':line.get('offset')}})
+
+# Choose which colour line the camera looks for at the bottom of the frame
+@app.route('/set_line_colour', methods=['POST'])
+def set_line_colour():
+    if not ROBOT:
+        return jsonify({'message':'robot not loaded'})
+    colour = request.form.get('colour', '')
+    if colour not in ROBOT.CAMERA.lab_colours:
+        return jsonify({'message':'unknown colour'}), 400
+    ROBOT.CAMERA.set_line_detection_colour(colour)
+    return jsonify({'message':'line colour set', 'colour':colour})
 
 
 # DASHBOARD CAMERA CONTROLS---------------------------------------------------------------
@@ -95,16 +201,13 @@ def stop():
 # Models the dashboard's Detect Object menu can load (see interfaces/detection_tasks/detect_object.py)
 OBJECT_MODELS = ['yolo26n', 'best_traffic_26', 'best_garbage_26', 'best_FourLineFollowing']
 
-# Pan or tilt the camera a step: direction is up, down, left, right or centre
-@app.route('/camera_move', methods=['POST'])
-def camera_move():
-    direction = request.form.get('direction', '')
+# Point the camera straight ahead (pan and tilt are hold-down buttons, see /hold)
+@app.route('/camera_centre', methods=['POST'])
+def camera_centre():
     if not ROBOT:
         return jsonify({'message':'robot not loaded'})
-    if direction not in ('up', 'down', 'left', 'right', 'centre'):
-        return jsonify({'message':'unknown direction'}), 400
-    pan, tilt = ROBOT.nudge_camera(direction)
-    return jsonify({'message':'camera moved', 'pan':pan, 'tilt':tilt})
+    pan, tilt = ROBOT.centre_camera_view()
+    return jsonify({'message':'camera centred', 'pan':pan, 'tilt':tilt})
 
 # Turn one detection task on or off. Form fields:
 #   task    - colour, line, object or pose
@@ -193,6 +296,9 @@ def turn_off_detection():
 @app.route('/logout')
 def logout():
     app.logger.info('logging off')
+    with ACTIVE_USER_LOCK:
+        if session.get('token') and session.get('token') == ACTIVE_USER['token']:
+            ACTIVE_USER['token'] = None # free the robot for the next user
     session.clear()
     return redirect('/')
 
@@ -207,6 +313,11 @@ def shutdown_robot():
         #ROBOT.SOUND.say("Goodbye")
         ROBOT = None
     return jsonify({'message':'Shutting Down'})
+
+# Keeps the login alive while the dashboard is open (the check is done in check_active_user)
+@app.route('/heartbeat', methods=['POST'])
+def heartbeat():
+    return jsonify({'message':'ok'})
 
 # Exit the web server
 @app.route('/exit', methods=['GET','POST'])
