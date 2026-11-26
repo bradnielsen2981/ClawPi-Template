@@ -118,5 +118,14 @@
 
 /* Sensors card */
 #sensors_card .data-label { width: 7.5rem; }
-#line_colour_select { max-width: 11rem; }
+/* Line follower: 4 lights, filled when that sensor sees the line */
+.line-sensors { display: inline-flex; gap: 0.35rem; }
+.line-sensor {
+    width: 1.6rem;
+    height: 1.1rem;
+    border-radius: 0.3rem;
+    border: 1px solid var(--app-card-border);
+    background: var(--bs-tertiary-bg);
+}
+.line-sensor.on { background: var(--app-accent); border-color: var(--app-accent); }
 .data-chip.chip-low { background: rgba(224, 49, 49, 0.16); border-color: rgba(224, 49, 49, 0.45); }

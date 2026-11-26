@@ -169,32 +169,17 @@ def release():
     return jsonify({'message':'released', 'pan':pan, 'tilt':tilt})
 
 # SENSORS CARD---------------------------------------------------------------------------
-# Battery voltage, IMU and the line the camera sees at the bottom of the frame (polled by the dashboard)
+# Battery voltage, IMU and the 4 channel line follower under the robot (polled by the dashboard)
 @app.route('/sensor_data', methods=['GET'])
 def sensor_data():
     robot = ROBOT
     if not robot:
         return jsonify({'loaded':False})
     imu = robot.get_imu_sensor(timeout=0) # timeout=0: use the latest reading, don't wait
-    camera = robot.CAMERA
-    line = camera.get_detection_data().get('detect_line', {})
     return jsonify({'loaded':True,
                     'voltage':robot.get_battery_voltage(timeout=0),
                     'imu':imu and {'rpy':imu['rpy'], 'accel':imu['accel'], 'gyro':imu['gyro']},
-                    'line':{'colour':camera.detectors['detect_line'].colour,
-                            'running':'detect_line' in camera.detection_tasks,
-                            'found':bool(line.get('found')), 'angle':line.get('angle'), 'offset':line.get('offset')}})
-
-# Choose which colour line the camera looks for at the bottom of the frame
-@app.route('/set_line_colour', methods=['POST'])
-def set_line_colour():
-    if not ROBOT:
-        return jsonify({'message':'robot not loaded'})
-    colour = request.form.get('colour', '')
-    if colour not in ROBOT.CAMERA.lab_colours:
-        return jsonify({'message':'unknown colour'}), 400
-    ROBOT.CAMERA.set_line_detection_colour(colour)
-    return jsonify({'message':'line colour set', 'colour':colour})
+                    'line':robot.LINE_FOLLOWER.get_line_data()}) # sensors, on_line, position, junction
 
 
 # DASHBOARD CAMERA CONTROLS---------------------------------------------------------------
@@ -275,7 +260,9 @@ def videofeed():
     robot = ROBOT
     if not robot:
         return '', 204
-    return Response(videostream(robot.CAMERA), mimetype='multipart/x-mixed-replace; boundary=frame')
+    response = Response(videostream(robot.CAMERA), mimetype='multipart/x-mixed-replace; boundary=frame')
+    response.headers['Cache-Control'] = 'no-store' # a live stream: never keep a copy
+    return response
 
 # Turn on detection mode
 @app.route('/turn_on_detection', methods=['GET','POST'])

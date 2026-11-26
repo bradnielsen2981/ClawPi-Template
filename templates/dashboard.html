@@ -254,12 +254,13 @@
                 <div class="data-row">
                     <span class="data-label"><i class="fa-solid fa-grip-lines fa-fw"></i> Bottom line</span>
                     <span class="data-values flex-column">
-                        <select id="line_colour_select" class="form-select form-select-sm" aria-label="Colour of the line to look for">
-                            {% for value, label, swatch in colours %}
-                            <option value="{{ value }}" {% if value == 'black' %}selected{% endif %}>{{ label }} line</option>
+                        <!-- The 4 line follower sensors, left to right as seen from behind the robot. Lit = sees the line. -->
+                        <span class="line-sensors" role="img" id="line_sensors" aria-label="Line follower: no reading">
+                            {% for label in ['Far left', 'Centre left', 'Centre right', 'Far right'] %}
+                            <span class="line-sensor" title="{{ label }} sensor"></span>
                             {% endfor %}
-                        </select>
-                        <span id="sensor_line"><span class="text-body-secondary">turn on Detect Line to see it</span></span>
+                        </span>
+                        <span id="sensor_line"><span class="text-body-secondary">no reading</span></span>
                     </span>
                 </div>
             </div>

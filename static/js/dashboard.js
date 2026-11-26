@@ -17,7 +17,9 @@ function show_dashboard()
 {
     loader.style.display = 'none';
     dashboard.style.display = "";
-    videofeed.innerHTML = '<img src="/videofeed" class="videofeed" alt="Robot camera">';
+    // A new address each time: with the same address the browser reuses the picture it already has
+    // (the last frame before shutdown) instead of opening a new video stream
+    videofeed.innerHTML = '<img src="/videofeed?t=' + Date.now() + '" class="videofeed" alt="Robot camera">';
     robot_buttons.style.display = "flex";
     shutdown_robot_button.style.display = "inline-flex";
     load_robot_button.style.display = "none";
@@ -389,20 +391,33 @@ function show_sensor_data(reply)
                                chip('gyro ' + xyz(imu.gyro) + ' rad/s');
     }
 
-    var line = reply.line;
-    if (document.activeElement !== line_colour_select) { line_colour_select.value = line.colour; }
-    if (!line.running) {
-        sensor_line.innerHTML = '<span class="text-body-secondary">turn on Detect Line to see it</span>';
-    } else if (!line.found) {
-        sensor_line.innerHTML = chip('no ' + line.colour.replace(/_/g, ' ') + ' line under the robot');
-    } else {
-        var text = line.colour.replace(/_/g, ' ') + ' line found';
-        if (line.angle != null) { text += ' · angle ' + line.angle + '° · offset ' + line.offset + 'px'; }
-        sensor_line.innerHTML = chip(text, 'chip-found');
-    }
+    show_line_follower(reply.line);
 }
 
-line_colour_select.onchange = function () { post('/set_line_colour', { colour: line_colour_select.value }); };
+// The 4 channel line follower: line.sensors is [far left, centre left, centre right, far right], true = sees the line
+var SENSOR_NAMES = ['far left', 'centre left', 'centre right', 'far right'];
+function show_line_follower(line)
+{
+    var sensors = line.sensors;
+    line_sensors.querySelectorAll('.line-sensor').forEach(function (light, i) {
+        light.classList.toggle('on', !!(sensors && sensors[i]));
+    });
+    if (!sensors) {
+        line_sensors.setAttribute('aria-label', 'Line follower: no reading');
+        sensor_line.innerHTML = '<span class="text-body-secondary">' + escape_html(line.error || 'no reading') + '</span>';
+        return;
+    }
+    var seen = SENSOR_NAMES.filter(function (name, i) { return sensors[i]; });
+    line_sensors.setAttribute('aria-label', 'Line follower: ' + (seen.length ? 'line under ' + seen.join(', ') : 'no line'));
+    if (!line.on_line) {
+        sensor_line.innerHTML = chip('no line under the robot');
+        return;
+    }
+    var p = line.position, where = Math.abs(p) < 0.2 ? 'centred' : (p < 0 ? 'line to the left' : 'line to the right');
+    var parts = [chip(where + ' (' + p.toFixed(2) + ')', 'chip-found')];
+    if (line.junction) { parts.push(chip('junction', 'chip-gesture')); }
+    sensor_line.innerHTML = parts.join(' ');
+}
 
 //---START----------------------------------------------------------------------------
 //hide or show dashboard based on initial value from server on page load
