@@ -14,7 +14,7 @@ from camerainterface import CameraInterface
 from lidarinterface import LidarInterface
 from linefollowerinterface import LineFollowerInterface
 from mappinginterface import MappingInterface
-from loggerinterface import setup_logger
+from loggerinterface import get_logger
 
 # RGB values used to show a detection colour on the robot's LEDs
 LED_COLOURS = {
@@ -100,8 +100,7 @@ class RobotInterface(ClawPi):
         self._hold_quit = threading.Event()
         self.camera_pan, self.camera_tilt = 0, 0
         self.show_camera = False # only turn this on to see the camera window, will slow down performance when using VNC
-        self.logger = logging.getLogger('Robot')
-        setup_logger(self.logger, '../logs/robot.log')
+        self.logger = get_logger('Robot') # logs/robot.log
 
         # Speaker, music and voice commands through the WonderEcho Pro (see voiceagentinterface.py).
         # It only listens for "Hello Hiwonder" once ROBOT.SOUND.start_listening() is called.
@@ -119,7 +118,7 @@ class RobotInterface(ClawPi):
 
         # 4 channel line follower under the front of the robot (read over I2C, see linefollowerinterface.py).
         # If it can't be used, LINE_FOLLOWER.available is False and its readings are None.
-        self.LINE_FOLLOWER = LineFollowerInterface(logger=self.logger)
+        self.LINE_FOLLOWER = LineFollowerInterface() # logs/linefollower.log
 
         # The lidar and mapping interfaces are only created the first time they are used (see LIDAR and MAPPING)
         self._lidar = None
@@ -203,6 +202,8 @@ class RobotInterface(ClawPi):
         if action not in HOLD_ACTIONS:
             return False
         with self._hold_lock:
+            if self._hold[0] != action: # log the press, not every 0.5 s repeat
+                self.logger.info(f"Dashboard hold: {action}")
             self._hold = (action, time.time() + HOLD_TIMEOUT)
         return True
 
@@ -211,6 +212,8 @@ class RobotInterface(ClawPi):
         with self._hold_lock:
             if deadline is not None and self._hold[1] != deadline:
                 return # a newer press arrived, leave it running
+            if self._hold[0] is not None:
+                self.logger.info(f"Dashboard release: {self._hold[0]}")
             self._hold = (None, 0)
         self.stop()
 

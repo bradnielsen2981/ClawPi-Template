@@ -119,7 +119,7 @@ class ObjectDetector(Detector):
 
         path = find_model(model, size)
         if path is None:
-            print(f"YOLO model '{model}' not found in {YOLO_DIR}")
+            self.logger.error(f"YOLO model '{model}' not found in {YOLO_DIR}")
             return False
         task, model_size, labels = read_metadata(path)
         try:
@@ -127,16 +127,17 @@ class ObjectDetector(Detector):
             yolo = YOLO(path, task=task or 'detect')
             labels = labels or label_list(getattr(yolo, 'names', None))
         except Exception as e:
-            print(f"Failed to load YOLO model {path}: {e}")
+            self.logger.error(f"Failed to load YOLO model {path}: {e}")
             return False
         if model_size and model_size != size:
-            print(f"YOLO model {model} is only available at size {model_size} - using that")
+            self.logger.warning(f"YOLO model {model} is only available at size {model_size} - using that")
 
         with self.model_lock:
             self.model, self.model_name, self.model_path = yolo, model, path
             self.task, self.labels = task or yolo.task, labels
             self.size = model_size or size # An OpenVINO export only works at the size it was exported at
         self._result = None
+        self.logger.info(f"YOLO model {model} loaded from {path} at size {self.size} ({len(labels)} classes)")
         return True
 
     def clear(self):
@@ -170,7 +171,7 @@ class ObjectDetector(Detector):
                                iou=self.overlap_threshold, verbose=False)[0] # Ultralytics takes BGR like OpenCV
                 targets = self._read_result(result, labels, task)
             except Exception as e:
-                print(f"Object detection failed: {e}")
+                self.logger.error(f"Object detection failed: {e}")
                 time.sleep(1)
                 continue
             elapsed = time.time() - starttime

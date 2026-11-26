@@ -10,7 +10,7 @@
 # lidar). The camera sits on the pan/tilt gimbal, so its direction is read from TF every time.
 # Angles are in degrees, distances in metres. Run inside the ClawPi container, where ROS 2 is available.
 
-import sys, os, time, threading, math, subprocess, signal, atexit, json
+import sys, os, re, time, threading, math, subprocess, signal, atexit, json
 import cv2
 import numpy as np
 
@@ -26,6 +26,7 @@ from tf2_ros import Buffer, TransformListener
 
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
+from loggerinterface import get_logger, logging_enabled
 from lidarinterface import LidarInterface, yaw_from_quaternion, angle_difference
 from camerainterface import CameraInterface
 from clawpiinterface import (CAMERA_PAN_SERVO_ID, CAMERA_TILT_SERVO_ID, SERVO_CENTER,
@@ -49,7 +50,7 @@ SLAM_LAUNCH_FILES = {
 # Default folders (<project>/static/maps and <project>/logs)
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAP_DIR = os.path.join(PROJECT_DIR, 'static', 'maps')
-SLAM_LOG_PATH = os.path.join(PROJECT_DIR, 'logs', 'slam.log')
+ANSI_CODES = re.compile(r'\x1b\[[0-9;]*m') # colour codes in the SLAM program's output, removed for the log
 
 # Camera geometry at 640x480, from Hiwonder's calibration (ros2_ws/src/peripherals/config/camera_info.yaml).
 # Replaced by camera_info if it is published.
@@ -85,13 +86,14 @@ class MappingInterface():
                                               and shares it with the lidar and camera it creates.
             use_camera (bool, optional): Needed for object tagging. Defaults to True.
         """
+        self.logger = get_logger('Mapping')          # logs/map.log
+        self.slam_logger = get_logger('Mapping.SLAM') # the SLAM program's own output, also in logs/map.log
         self.status = "Init"
         self.robot = robot
         self.method = None
         self.map_msg = None
         self.map_id = 0
         self._slam_process = None
-        self._slam_log = None
 
         # Object tagging
         self.objects = []               # Every object seen: {'label', 'x', 'y', 'sightings', 'last_seen'}
@@ -148,7 +150,7 @@ class MappingInterface():
             self.status = "Ready"
         except Exception as e:
             self.status = "Fail"
-            print(f"Mapping could not be set up: {e}")
+            self.logger.error(f"Mapping could not be set up: {e}")
 
         atexit.register(self.stop_mapping) # Never leave the SLAM program running after the program ends
 
@@ -182,23 +184,25 @@ class MappingInterface():
         if self.status == "Fail":
             return False
         if method not in SLAM_LAUNCH_FILES:
-            print("Method must be one of: " + ", ".join(SLAM_LAUNCH_FILES))
+            self.logger.warning(f"Unknown mapping method {method!r} - must be one of: " + ", ".join(SLAM_LAUNCH_FILES))
             return False
         with self.slam_lock:
             if self.is_mapping():
                 if method != self.method:
-                    print(f"Already mapping with {self.method} - stop mapping first to change method")
+                    self.logger.warning(f"Already mapping with {self.method} - stop mapping first to change method")
             else:
                 time.sleep(1) # Give ROS a moment to discover a mapping program that is already running
                 if self.node.count_publishers(MAP_TOPIC) > 0:
-                    print("Mapping is already running in another program - using its map")
+                    self.logger.info("Mapping is already running in another program - using its map")
                 else:
-                    print(f"Starting mapping ({method}), output in logs/slam.log")
-                    os.makedirs(os.path.dirname(SLAM_LOG_PATH), exist_ok=True)
-                    self._slam_log = open(SLAM_LOG_PATH, 'w')
+                    self.logger.info(f"Starting mapping ({method}): ros2 launch {SLAM_LAUNCH_FILES[method]}")
                     env = dict(os.environ, need_compile=os.environ.get('need_compile', 'False'))
+                    # The SLAM program's output goes into map.log line by line (thrown away if logging is off)
+                    output = subprocess.PIPE if logging_enabled() else subprocess.DEVNULL
                     self._slam_process = subprocess.Popen(['ros2', 'launch', SLAM_LAUNCH_FILES[method]], env=env,
-                                                          stdout=self._slam_log, stderr=subprocess.STDOUT)
+                                                          stdout=output, stderr=subprocess.STDOUT, text=True)
+                    if output == subprocess.PIPE:
+                        threading.Thread(target=self._log_slam_output, args=(self._slam_process,), daemon=True).start()
                     self.method = method
 
         endtime = time.time() + timeout
@@ -207,11 +211,18 @@ class MappingInterface():
                 self.status = "Mapping"
                 return True
             if self._slam_process is not None and self._slam_process.poll() is not None:
-                print("Mapping stopped unexpectedly - see logs/slam.log")
+                self.logger.error(f"Mapping stopped unexpectedly (exit code {self._slam_process.returncode}) - see logs/map.log")
                 return False
             time.sleep(0.2)
-        print("No map received yet - is the robot's bringup (odometry) running?")
+        self.logger.warning(f"No map received after {timeout} s - is the robot's bringup (odometry) running?")
         return False
+
+    def _log_slam_output(self, process):
+        """Runs in the background: copies each line the SLAM program prints into map.log."""
+        for line in process.stdout:
+            line = ANSI_CODES.sub('', line).rstrip()
+            if line:
+                self.slam_logger.info(line)
 
     def is_mapping(self):
         """Returns True while this interface's SLAM program is running."""
@@ -224,16 +235,13 @@ class MappingInterface():
         with self.slam_lock:
             process, self._slam_process = self._slam_process, None
             if process is not None and process.poll() is None:
-                print("Stopping mapping")
+                self.logger.info("Stopping mapping")
                 process.send_signal(signal.SIGINT) # ros2 launch passes Ctrl+C on to the SLAM program
                 try:
                     process.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait()
-            if self._slam_log is not None:
-                self._slam_log.close()
-                self._slam_log = None
         if self.status == "Mapping":
             self.status = "Ready"
 
@@ -285,10 +293,10 @@ class MappingInterface():
             bool: True if tagging started.
         """
         if self.camera is None or self.camera.status != "Running":
-            print("Object tagging needs a running camera")
+            self.logger.warning("Object tagging needs a running camera")
             return False
         if self.lidar is None or self.lidar.status != "Running":
-            print("No lidar - only objects standing on the floor can be placed on the map")
+            self.logger.warning("No lidar - only objects standing on the floor can be placed on the map")
         if model and "detect_object" not in self.camera.detection_tasks:
             self.camera.add_detection_task("detect_object")
             self._tagging_tasks.append("detect_object")
@@ -566,7 +574,7 @@ class MappingInterface():
         """
         map_data = self.get_map()
         if map_data is None:
-            print("No map to save")
+            self.logger.warning("No map to save")
             return None
         name = name or time.strftime('map_%Y%m%d_%H%M%S')
         os.makedirs(folder, exist_ok=True)
@@ -583,7 +591,7 @@ class MappingInterface():
         if objects:
             with open(base + '_objects.json', 'w') as f:
                 json.dump(objects, f, indent=2)
-        print(f"Map saved to {base}.yaml")
+        self.logger.info(f"Map saved to {base}.yaml")
         return base + '.yaml'
 
     def stop(self):
@@ -610,7 +618,7 @@ class MappingInterface():
                 if self._owns_rclpy and rclpy.ok():
                     rclpy.shutdown()
         except Exception as e:
-            print(f"Mapping shutdown problem: {e}")
+            self.logger.error(f"Mapping shutdown problem: {e}")
 
 # TEST MAPPING CODE
 if __name__ == '__main__':

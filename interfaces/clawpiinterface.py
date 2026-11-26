@@ -40,6 +40,7 @@ Example:
 import json
 import math
 import os
+import sys
 import threading
 import time
 
@@ -52,6 +53,9 @@ from geometry_msgs.msg import Twist, Vector3Stamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
 from std_msgs.msg import String, UInt16
+sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+from loggerinterface import get_logger
+
 from ros_robot_controller_msgs.msg import (
     BuzzerState, ButtonState, LedState, MotorState, MotorsState,
     PWMServoState, RGBState, RGBStates, SetPWMServoState
@@ -141,6 +145,7 @@ class ClawPi:
 
     def __init__(self, node_name='clawpi_interface', default_speed=0.2,
                  default_turn_speed=1.0):
+        self.hardware_logger = get_logger('ClawPi') # logs/clawpi.log
         self.default_speed = default_speed
         self.default_turn_speed = default_turn_speed
 
@@ -181,6 +186,7 @@ class ClawPi:
 
         # Give DDS a moment to match publishers/subscribers.
         time.sleep(0.5)
+        self.hardware_logger.info(f"Connected to the robot through ROS 2 node '{node_name}'")
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -676,7 +682,7 @@ class ClawPi:
             try:
                 cb(msg.id, msg.state)
             except Exception as e:  # don't let user code kill the executor
-                self.node.get_logger().error(f'button callback failed: {e}')
+                self.hardware_logger.error(f'Button {msg.id} callback {getattr(cb, "__name__", cb)} failed: {e}')
 
 
 if __name__ == '__main__':

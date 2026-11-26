@@ -1,11 +1,15 @@
-import json
+import json, os, sys
 import urllib.error
 import urllib.parse
 import urllib.request
 
+sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+from loggerinterface import get_logger
+
 #---EXTERNAL URL REQUEST LIBRARY---------------------------------------#
-# All functions return None (and print the reason) if the request fails,
+# All functions return None (and log the reason to logs/url.log) if the request fails,
 # so a network problem won't crash the robot's main loop.
+logger = get_logger('URL')
 
 DEFAULT_TIMEOUT = 10 # seconds to wait before giving up on a server
 
@@ -15,11 +19,11 @@ def _send(req, timeout):
             charset = response.headers.get_content_charset() or 'utf-8'
             return response.read().decode(charset)
     except urllib.error.HTTPError as e:
-        print("URL request failed: " + req.full_url + " returned HTTP " + str(e.code) + " " + str(e.reason))
+        logger.error(f"{req.get_method()} {req.full_url} returned HTTP {e.code} {e.reason}")
     except urllib.error.URLError as e:
-        print("URL request failed: could not reach " + req.full_url + " (" + str(e.reason) + ")")
+        logger.error(f"{req.get_method()} {req.full_url} could not be reached ({e.reason})")
     except (TimeoutError, OSError) as e:
-        print("URL request failed: " + req.full_url + " (" + str(e) + ")")
+        logger.error(f"{req.get_method()} {req.full_url} failed ({e})")
     return None
 
 # POST form data (e.g. {'name': 'robot', 'score': 5}) and return the response text

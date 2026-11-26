@@ -94,7 +94,7 @@ class PoseDetector(Detector):
         if confidence is not None:
             self.confidence_level = confidence
         if not os.path.exists(model_path):
-            print(f"Pose model not found: {model_path}")
+            self.logger.error(f"Pose model not found: {model_path}")
             return False
         try:
             mp = import_mediapipe()
@@ -109,7 +109,7 @@ class PoseDetector(Detector):
                 min_tracking_confidence=self.confidence_level)
             landmarker = vision.PoseLandmarker.create_from_options(options)
         except Exception as e:
-            print(f"Failed to load pose model {model_path}: {e}")
+            self.logger.error(f"Failed to load pose model {model_path}: {e}")
             return False
 
         with self.model_lock:
@@ -159,7 +159,7 @@ class PoseDetector(Detector):
                     result = self.landmarker.detect_for_video(image, timestamp)
                 people = [self._read_person(landmarks, bgr.shape[1], bgr.shape[0]) for landmarks in result.pose_landmarks]
             except Exception as e:
-                print(f"Pose detection failed: {e}")
+                self.logger.error(f"Pose detection failed: {e}")
                 time.sleep(1)
                 continue
             elapsed = time.time() - starttime

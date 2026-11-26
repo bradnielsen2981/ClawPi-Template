@@ -18,6 +18,9 @@ from rclpy.executors import SingleThreadedExecutor
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 
+sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+from loggerinterface import get_logger
+
 SCAN_TOPIC = '/scan_raw'
 
 # Colours (BGR) for the pictures
@@ -54,6 +57,7 @@ class LidarInterface():
         self.timelimit = timelimit
         np.set_printoptions(suppress=True) # Disable scientific notation for clarity
 
+        self.logger = get_logger('Lidar') # logs/lidar.log
         self.status = "Init"
         self.angles = None  # Newest scan: angle of each reading in degrees (-180 to 180)
         self.ranges = None  # Newest scan: distance of each reading in metres (inf = nothing detected)
@@ -90,9 +94,10 @@ class LidarInterface():
             if not self._new_scan.wait(timeout=5):
                 raise TimeoutError("no lidar scans received - is the robot's bringup running?")
             self.status = "Running"
+            self.logger.info(f"Lidar running on {SCAN_TOPIC}")
         except Exception as e:
             self.status = "Fail"
-            print(f"Lidar could not be accessed: {e}")
+            self.logger.error(f"Lidar could not be accessed on {SCAN_TOPIC}: {e}")
 
     def _scan_callback(self, msg):
         """ROS callback: converts the newest scan into numpy arrays of angles (degrees) and ranges (metres)."""
@@ -317,7 +322,7 @@ class LidarInterface():
                 if self._owns_rclpy and rclpy.ok():
                     rclpy.shutdown()
         except Exception as e:
-            print(f"Lidar shutdown problem: {e}")
+            self.logger.error(f"Lidar shutdown problem: {e}")
 
 # TEST LIDAR CODE
 if __name__ == '__main__':

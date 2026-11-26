@@ -22,8 +22,9 @@ Example:
 The ubuntu user needs permission to use /dev/i2c-1. If it doesn't have it, the sensor reports
 available = False and read() returns None instead of stopping the robot from loading.
 """
-import logging
 import threading
+
+from loggerinterface import get_logger
 
 try:
     import smbus
@@ -48,18 +49,17 @@ def line_position(sensors):
 
 class LineFollowerInterface():
 
-    def __init__(self, bus=LINE_SENSOR_BUS, address=LINE_SENSOR_ADDRESS, logger=None):
+    def __init__(self, bus=LINE_SENSOR_BUS, address=LINE_SENSOR_ADDRESS):
         """
         Opens the I2C bus and checks the sensor answers.
 
         Args:
             bus (int, optional): I2C bus number. Defaults to 1 (/dev/i2c-1).
             address (int, optional): The sensor's I2C address. Defaults to 0x78.
-            logger (logging.Logger, optional): Where to log problems. Defaults to a 'LineFollower' logger.
         """
         self.bus_number = bus
         self.address = address
-        self.logger = logger or logging.getLogger('LineFollower')
+        self.logger = get_logger('LineFollower') # logs/linefollower.log
         self.available = False   # True once the sensor has answered
         self.error = None        # why the sensor can't be used, if it can't
         self.last_reading = None # the latest [far left, centre left, centre right, far right]
@@ -71,6 +71,7 @@ class LineFollowerInterface():
             self._bus = smbus.SMBus(bus)
             self._bus.read_byte_data(address, LINE_SENSOR_REGISTER) # does it answer?
             self.available = True
+            self.logger.info(f"Line follower found at {hex(address)} on I2C bus {bus}")
         except PermissionError:
             self.error = f"no permission to use /dev/i2c-{bus} (the user needs access to the I2C bus)"
         except (OSError, IOError):
@@ -156,7 +157,6 @@ class LineFollowerInterface():
 # TEST THE SENSOR: run this file on its own and slide a line under the robot
 if __name__ == '__main__':
     import time
-    logging.basicConfig(level=logging.INFO)
     sensor = LineFollowerInterface()
     if not sensor.available:
         print("Line follower unavailable:", sensor.error)

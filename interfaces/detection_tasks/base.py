@@ -4,6 +4,8 @@
 # 'detect_face'), fill in detect() and draw(), and add the class to DETECTOR_CLASSES in __init__.py.
 
 import math
+
+from loggerinterface import get_logger
 import cv2
 import numpy as np
 
@@ -83,6 +85,7 @@ class Detector():
                                       detection_data_expire_time and the newest frames).
         """
         self.camera = camera
+        self.logger = get_logger('Camera.' + type(self).__name__) # logs/camera.log, e.g. Camera.ObjectDetector
 
     @property
     def expire_time(self):

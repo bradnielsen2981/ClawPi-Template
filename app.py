@@ -4,18 +4,15 @@ from flask import *
 from interfaces.databaseinterface import Database
 from interfaces.hashinginterface import *
 from robot import Robot
+from interfaces.loggerinterface import setup_logging
 import logging, time, sys, os, signal, threading, uuid
 
 #---SETUP LOGGING------------------------------------------------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LOG_DIR = os.path.join(BASE_DIR, "logs")
-os.makedirs(LOG_DIR, exist_ok=True)
-
-logging.basicConfig(
-    filename=os.path.join(LOG_DIR, "flask.log"),
-    filemode="w",  # Clear the log each time the app starts
-    level=logging.INFO
-)
+# Each interface logs to its own file in the logs folder (see interfaces/loggerinterface.py):
+# flask.log, robot.log, camera.log, map.log, database.log ... Each file is emptied when the app starts.
+LOGGING = True              # False turns off ALL logging (every log file and the terminal warnings)
+LOG_LEVEL = logging.INFO    # logging.DEBUG also logs every SQL query; logging.WARNING only problems
+setup_logging(enabled=LOGGING, level=LOG_LEVEL)
 
 #---CONFIGURE APP---------------------------------------------------
 app = Flask(__name__)
@@ -23,7 +20,7 @@ sys.tracebacklimit = 10
 app.config['SECRET_KEY'] = "ClawPi2026"
 
 #---EMBED OBJECTS---------------------------------------------------
-DATABASE = Database("databases/test.db", app.logger)
+DATABASE = Database("databases/test.db") # logs to logs/database.log
 ROBOT = None
 
 #---ONE USER AT A TIME-----------------------------------------------
@@ -57,6 +54,7 @@ def check_active_user():
 @app.route('/backdoor')
 def backdoor():
     if session.get('permission') != 'admin': # admin users only
+        app.logger.warning(f"Backdoor refused for {request.remote_addr}: not an admin")
         return jsonify({'message':'admin permission required'}), 403
     results = DATABASE.ViewQuery("SELECT * FROM users") if DATABASE else []
     return jsonify(results)
@@ -74,6 +72,7 @@ def login():
         if email == 'admin@admin' and password == 'admin':
             with ACTIVE_USER_LOCK:
                 if someone_else_logged_in():
+                    app.logger.warning(f"Login refused for {email} from {request.remote_addr}: another user is logged in")
                     message = "Another user is already logged in to the robot. Try again when they log out."
                 else:
                     session.clear()
@@ -82,8 +81,10 @@ def login():
                     session['token'] = uuid.uuid4().hex
                     ACTIVE_USER['token'] = session['token']
                     ACTIVE_USER['last_seen'] = time.time()
+                    app.logger.info(f"Login: {email} from {request.remote_addr}")
                     return redirect('./dashboard') #takes 3 seconds for the CAMERA to start
         else:
+            app.logger.warning(f"Failed login for {email} from {request.remote_addr}")
             message = "Incorrect email or password."
     return render_template("login.html", data=message)
 

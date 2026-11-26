@@ -35,10 +35,7 @@ from datetime import datetime
 import numpy as np
 
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
-try:
-    from loggerinterface import setup_logger
-except ImportError:
-    setup_logger = None
+from loggerinterface import get_logger
 
 # --- WonderEcho Pro hardware ---------------------------------------------------------------
 ALSA_DEVICE = 'plughw:CARD=Device,DEV=0'   # The WonderEcho's sound card (speaker and microphone)
@@ -174,9 +171,7 @@ class VoiceAgentInterface():
         """
         self.robot = robot
         self.name = name
-        self.logger = logging.getLogger('VoiceAgent')
-        if setup_logger and not self.logger.handlers:
-            setup_logger(self.logger, '../logs/voice.log')
+        self.logger = get_logger('Voice') # logs/voice.log
 
         # API / model settings (see set_api_key, use_local_llm)
         self.api_key = None
@@ -276,7 +271,7 @@ class VoiceAgentInterface():
             bool: True if Ollama answered.
         """
         if not self._ollama_running(url):
-            print(f"Ollama isn't running at {url}")
+            self.logger.warning(f"Ollama isn't running at {url}")
             return False
         self._local_llm = (url, model)
         return True
@@ -337,7 +332,7 @@ class VoiceAgentInterface():
             loops (int, optional): How many times to play it. -1 repeats until stop_sound().
         """
         if not os.path.exists(path):
-            print(f"Sound file not found: {path}")
+            self.logger.warning(f"Sound file not found: {path}")
             return
         self.stop_sound()
         if path.lower().endswith('.wav') and loops == 1:
@@ -637,8 +632,8 @@ class VoiceAgentInterface():
         self._listen_thread = threading.Thread(target=self._listen_loop, daemon=True, name='voice-listen')
         self._listen_thread.start()
         if self.describe_backends()['speech_to_text'] == 'none':
-            print("Voice agent: no speech to text available (set an OpenAI API key or install Vosk), so only the "
-                  "wake word, chip command words and loud sounds are reported.")
+            self.logger.warning("No speech to text available (set an OpenAI API key or install Vosk), so only the "
+                                "wake word, chip command words and loud sounds are reported.")
 
     def stop_listening(self):
         """Stops the listening thread."""
@@ -662,8 +657,8 @@ class VoiceAgentInterface():
             self._serial.reset_input_buffer()
         except Exception as e:
             self._serial = None
-            print(f"Voice agent: can't open the WonderEcho serial port {SERIAL_PORT} ({e}); "
-                  f"listening without the wake word")
+            self.logger.warning(f"Can't open the WonderEcho serial port {SERIAL_PORT} ({e}); "
+                                f"listening without the wake word")
             self.wake_word = False
 
     def _read_chip(self):
@@ -689,7 +684,7 @@ class VoiceAgentInterface():
             while self.listening:
                 chunk = mic.read()
                 if not chunk:
-                    print("Voice agent: the microphone stopped")
+                    self.logger.warning("The microphone stopped")
                     break
                 self.sound_level = level = chunk_level(chunk)
                 if level > self.loud_threshold and self.on_loud_sound and not self.is_speaking() and not self.is_playing():
@@ -720,8 +715,7 @@ class VoiceAgentInterface():
                     time.sleep(0.05)
                 mic.flush()
         except Exception as e:
-            self.logger.error(f"listening stopped: {e}")
-            print(f"Voice agent: listening stopped ({e})")
+            self.logger.error(f"Listening stopped: {e}")
         finally:
             mic.close()
             self.listening = False
@@ -729,7 +723,7 @@ class VoiceAgentInterface():
     def _chip_command(self, code):
         self.last_chip_command = code
         name = CHIP_COMMANDS.get(code)
-        print(f"Voice agent: chip command word {code[0]:02X} {code[1]:02X}" + (f" ({name})" if name else ""))
+        self.logger.info(f"Chip command word {code[0]:02X} {code[1]:02X}" + (f" ({name})" if name else ""))
         self._call(self.on_chip_command, code)
         if name and self.respond and name in self.commands:
             self.run_command(name)
@@ -759,7 +753,7 @@ class VoiceAgentInterface():
             try:
                 callback(*args)
             except Exception as e:
-                print(f"Voice agent callback error: {e}")
+                self.logger.error(f"Callback {getattr(callback, '__name__', callback)} failed: {e}")
 
     #-------------------------------------------
     # Understanding and carrying out commands
@@ -935,7 +929,7 @@ class VoiceAgentInterface():
             return f"I don't have a command called {name}."
         try:
             result = command['function'](**arguments)
-            print(f"Voice agent ran {name}({arguments}) -> {result}")
+            self.logger.info(f"Ran {name}({arguments}) -> {result}")
             return result if result is not None else "Done."
         except Exception as e:
             self.logger.error(f"{name} failed: {e}")

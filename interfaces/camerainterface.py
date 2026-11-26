@@ -19,6 +19,7 @@ from sensor_msgs.msg import Image
 
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
+from loggerinterface import get_logger
 from detection_tasks import Detector, DETECTOR_CLASSES, DETECTION_TASKS, json_safe
 
 # The ClawPi's USB camera (published by the robot's bringup as 640x480 YUYV at about 15 fps).
@@ -82,6 +83,7 @@ class CameraInterface():
             use_depth (bool, optional): Subscribe to the depth picture so detections include distances. Only for a
                                         fitted depth camera - the ClawPi has none by default. Defaults to False.
         """
+        self.logger = get_logger('Camera') # logs/camera.log
         self.timelimit = timelimit
         np.set_printoptions(suppress=True) # Disable scientific notation for clarity
 
@@ -133,7 +135,7 @@ class CameraInterface():
             with open(LAB_CONFIG_PATH, 'r', encoding='utf-8') as f:
                 self.lab_colours = yaml.safe_load(f)['lab'][LAB_CAMERA_TYPE]
         except Exception as e:
-            print(f"Could not load lab colours, using empty dictionary. Error: {e}")
+            self.logger.error(f"Could not load lab colours from {LAB_CONFIG_PATH}, colour and line detection will find nothing: {e}")
             self.lab_colours = {}
 
         # Connect to the camera topics
@@ -165,7 +167,7 @@ class CameraInterface():
             self.status = "Ready"
         except Exception as e:
             self.status = "Fail"
-            print(f"Video capture could not be accessed: {e}")
+            self.logger.error(f"Camera could not be started: {e}")
 
     def _rgb_callback(self, msg):
         """ROS callback: keeps only the newest colour message. Converting it is left to the processing thread."""
@@ -221,7 +223,7 @@ class CameraInterface():
                 depth_msg = self._depth_msg if self.use_depth else None
                 depth = image_msg_to_array(depth_msg) if depth_msg is not None else None
             except Exception as e:
-                print(f"Bad camera frame: {e}")
+                self.logger.warning(f"Bad camera frame, skipped: {e}")
                 continue
 
             with self.frame_lock:
@@ -474,7 +476,7 @@ class CameraInterface():
             mode (str): 'rgb' for the normal colour picture, 'depth' for the colour-mapped depth picture.
         """
         if mode not in ('rgb', 'depth'):
-            print("Mode must be 'rgb' or 'depth'")
+            self.logger.warning(f"Mode must be 'rgb' or 'depth', not {mode!r}")
             return
         if mode == 'depth':
             self.enable_depth()
@@ -542,7 +544,7 @@ class CameraInterface():
             detect_once (bool, optional): If True, removes the tasks after the first round of results. Defaults to False.
         """
         if task not in self.detectors:
-            print("Task must be one of: " + ", ".join(self.detectors))
+            self.logger.warning(f"Unknown detection task {task!r} - must be one of: " + ", ".join(self.detectors))
             return
         detector = self.detectors[task]
         if detector.needs_depth:
@@ -553,6 +555,7 @@ class CameraInterface():
             if task not in self.detection_tasks:
                 self.detect_once = detect_once
                 self.detection_tasks.append(task)
+                self.logger.info(f"Detection task started: {task}" + (" (once)" if detect_once else ""))
 
     def set_detection_tasks(self, tasks=None):
         """
@@ -613,6 +616,7 @@ class CameraInterface():
         with self.task_lock:
             if task in self.detection_tasks:
                 self.detection_tasks.remove(task)
+                self.logger.info(f"Detection task stopped: {task}")
         if task in self.detectors:
             self.detectors[task].reset() # So an old result isn't shown when the task is added again
 
@@ -818,16 +822,16 @@ class CameraInterface():
                 if self._owns_rclpy and rclpy.ok():
                     rclpy.shutdown()
         except Exception as e:
-            print(f"Camera shutdown problem: {e}")
+            self.logger.error(f"Camera shutdown problem: {e}")
 
     def pause(self):
         """Temporarily halts the processing of new frames in the background thread."""
-        print("Pausing Camera")
+        self.logger.info("Pausing camera")
         self.paused = True
 
     def resume(self):
         """Resumes the processing of frames in the background thread."""
-        print("Resuming Camera")
+        self.logger.info("Resuming camera")
         self.paused = False
 
 # TEST CAMERA CODE
