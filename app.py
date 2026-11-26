@@ -67,7 +67,7 @@ def load_robot():
         app.logger.info('Loading Robot')
         ROBOT = Robot(DATABASE)
         time.sleep(3) #takes 3 seconds to load the robot
-        ROBOT.SOUND.say("Hello my name is Wally")
+        #ROBOT.SOUND.say("Hello my name is Wally")
     return jsonify({'message':'robot loaded'})
 
 # YOUR FLASK CODE------------------------------------------------------------------------
@@ -77,7 +77,7 @@ def load_robot():
 def look_down():
     app.logger.info('Looking Down')
     if ROBOT:
-        ROBOT.SOUND.say("Looking Down")
+        #ROBOT.SOUND.say("Looking Down")
     return jsonify({'message':'look down'})
 
 # Stop
@@ -204,7 +204,7 @@ def shutdown_robot():
     if ROBOT:
         ROBOT.shutdown() # stops motors, mapping, lidar and camera, then releases the ROS connection
         time.sleep(0.5)
-        ROBOT.SOUND.say("Goodbye")
+        #ROBOT.SOUND.say("Goodbye")
         ROBOT = None
     return jsonify({'message':'Shutting Down'})
 
