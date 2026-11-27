@@ -992,8 +992,8 @@ class VoiceAgentInterface():
 
     def _cmd_stop(self):
         robot = self._need_robot()
-        if hasattr(robot, 'stop_behaviour'):
-            robot.stop_behaviour()
+        if hasattr(robot, 'stop_routine'):
+            robot.stop_routine()
         robot.stop()
         return "Stopped."
 

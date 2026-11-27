@@ -22,10 +22,11 @@ LED_COLOURS = {
     'yellow': (255, 255, 0), 'white': (255, 255, 255), 'black': (0, 0, 0),
 }
 
-# Speeds used by the movement behaviours (defined in robot_behaviours/__init__.py)
-from robot_behaviours import DRIVE_SPEED, TURN_SPEED
-from robot_behaviours.move_toward_colour_detected import move_toward_colour_detected
-from robot_behaviours.move_direction_until_detection import move_direction_until_detection
+# Speeds used by the movement routines (defined in robot_routines/__init__.py)
+from robot_routines import DRIVE_SPEED, TURN_SPEED
+from robot_routines.move_toward_colour_detected import move_toward_colour_detected
+from robot_routines.move_direction_until_detection import move_direction_until_detection
+from robot_routines.face_tracking import face_tracking
 
 # DASHBOARD HOLD CONTROLS -----------------------------------------------------------
 # A dashboard button keeps its action going while it is held: the browser re-sends the action every 0.5 s.
@@ -95,7 +96,7 @@ class RobotInterface(ClawPi):
         Initializes the Robot Interface, sets up sound and camera modules,
         and waits for hardware to warm up.
         """
-        self.behaviour = "Ready" # keep track of which behaviour is running
+        self.routine = "Ready" # keep track of which routine is running
         self._hold = (None, 0)  # (held dashboard action, time it must stop by)
         self._hold_lock = threading.Lock()
         self._hold_quit = threading.Event()
@@ -179,12 +180,12 @@ class RobotInterface(ClawPi):
         """Where the line is under the robot: -1.0 far left to 1.0 far right, None if it can't be seen."""
         return self.LINE_FOLLOWER.get_line_position()
 
-    def stop_behaviour(self):
+    def stop_routine(self):
         """
-        Safely stops the robot's current movement process and resets the behaviour state.
+        Safely stops the robot's current movement process and resets the routine state.
         Call this anytime you need to abort a running while-loop instantly.
         """
-        self.behaviour = "Ready"
+        self.routine = "Ready"
         with self._hold_lock:
             self._hold = (None, 0)
         self.stop()
@@ -243,11 +244,7 @@ class RobotInterface(ClawPi):
         elif action in HOLD_CAMERA:
             pan_dir, tilt_dir = HOLD_CAMERA[action]
             step = CAMERA_SPEED * period
-            pan = max(PAN_RANGE[0], min(PAN_RANGE[1], self.camera_pan + pan_dir * step))
-            tilt = max(TILT_RANGE[0], min(TILT_RANGE[1], self.camera_tilt + tilt_dir * step))
-            if (pan, tilt) != (self.camera_pan, self.camera_tilt): # nothing to send once at a limit
-                self.camera_pan, self.camera_tilt = pan, tilt
-                self.set_camera(pan, tilt, duration=period)
+            self.point_camera(self.camera_pan + pan_dir * step, self.camera_tilt + tilt_dir * step, duration=period)
         elif action in HOLD_CLAW:
             servo, direction, low, high, start = HOLD_CLAW[action]
             pulse = self.get_servo_position(servo) or start
@@ -258,6 +255,21 @@ class RobotInterface(ClawPi):
     def get_camera_angles(self):
         """The camera's current (pan, tilt) in whole degrees."""
         return round(self.camera_pan), round(self.camera_tilt)
+
+    def point_camera(self, pan, tilt, duration=0.2):
+        """
+        Points the camera at (pan, tilt) degrees, kept inside the angles the gimbal can reach, and remembers it.
+        Positive pan = left, positive tilt = up. Nothing is sent if the camera is already there (e.g. at a limit).
+
+        Returns:
+            tuple: The camera's new (pan, tilt) in degrees.
+        """
+        pan = max(PAN_RANGE[0], min(PAN_RANGE[1], pan))
+        tilt = max(TILT_RANGE[0], min(TILT_RANGE[1], tilt))
+        if (pan, tilt) != (self.camera_pan, self.camera_tilt):
+            self.camera_pan, self.camera_tilt = pan, tilt
+            self.set_camera(pan, tilt, duration=duration)
+        return self.get_camera_angles()
 
     def centre_camera_view(self):
         """
@@ -281,20 +293,42 @@ class RobotInterface(ClawPi):
         """
         self.turn_on_led(*LED_COLOURS.get(colour, (0, 0, 0)))
 
-    #---BEHAVIOURS (each one lives in its own file in robot_behaviours/)----------------
+    def show_camera_window(self):
+        """
+        Renders the OpenCV display window.
+        If self.show_camera is False, it implements a small artificial sleep.
+        This is a critical performance fix to prevent headless while-loops from
+        spinning out of control and maxing out the CPU.
+
+        Returns:
+            bool: True normally, False if the user presses 'q' on the keyboard.
+        """
+        if not self.show_camera:
+            # CRITICAL FIX: Add a small delay to prevent while-loops from running unthrottled
+            time.sleep(0.03)
+            return True
+
+        frame = self.CAMERA.get_frame()
+        cv2.imshow('Detection Mode', frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            return False
+        return True
+
+    #---ROUTINES (each one lives in its own file in robot_routines/)----------------
     move_toward_colour_detected = move_toward_colour_detected
     move_direction_until_detection = move_direction_until_detection
+    face_tracking = face_tracking
 
     def shutdown(self):
         """
         Safely powers down all systems. Stops motors, stops the background camera threads,
         and clears the LEDs. Always call this when exiting the script to prevent hardware damage.
         """
-        self.behaviour = "Shutdown"
+        self.routine = "Shutdown"
         self._hold_quit.set() # end the dashboard safety loop before the ROS connection goes
         self._hold_thread.join(timeout=1.0)
         self.SOUND.stop_listening() # no more voice commands once the robot is shutting down (it can still speak)
-        self.stop_behaviour()
+        self.stop_routine()
         # Stop in reverse order of creation: mapping uses the lidar and camera, which all use the ROS connection
         if self._mapping is not None:
             self._mapping.stop()

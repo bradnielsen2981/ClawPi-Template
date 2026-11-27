@@ -124,7 +124,7 @@ def look_down():
 def stop():
     app.logger.info('stopping robot')
     if ROBOT:
-        ROBOT.stop_behaviour() # also ends any held dashboard button
+        ROBOT.stop_routine() # also ends any held dashboard button
     return jsonify({'message':'stop'})
 
 # DASHBOARD HOLD-DOWN BUTTONS (movement, claw, camera pan/tilt)----------------------------

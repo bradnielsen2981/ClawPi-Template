@@ -1,6 +1,8 @@
 # This is where your main robot code resides. It extends from the RobotInterface file.
 # It inherits all the complex camera, sound, and movement functions!
-# The self.behaviour and self.routine variables are important because they keep track of robot states. 
+# The self.task and self.routine variables are important because they keep track of robot states.
+# self.task is the big job the robot is doing (e.g. 'automated_search'), self.routine is the movement routine
+# (from interfaces/robot_routines/) running right now.
 # Remember: Flask uses Threading (multiple processes running at once, which can confuse the robot if states aren't tracked)
 
 import logging, sys, os, time
@@ -20,7 +22,7 @@ class Robot(RobotInterface):
             self.DATABASE = DATABASE
             
         # State tracking for Flask integration
-        self.routine = "ready" 
+        self.task = None
         return
      
     # Write a function for automated search
@@ -29,18 +31,24 @@ class Robot(RobotInterface):
         Students can write their autonomous logic here!
         Use self.move_direction_until_detection(), self.move_toward_colour_detected(), etc.
         """
-        self.routine = 'automated_search'
+        self.task = 'automated_search'
         self.logger.info('Beginning Automated Search')
-        
-        # STUDENT CODE GOES HERE
-        
+        endtime = time.time() + timelimit
+
+        while self.task == 'automated_search' and time.time() < endtime:
+            if not self.show_camera_window(): # Acts as our loop throttler
+                break
+
+            # STUDENT CODE GOES HERE
+
+        self.stop_automated_search()
         return
     
     def stop_automated_search(self):
-        """Safely interrupts the automated routine."""
-        self.routine = 'ready'
+        """Safely interrupts the automated search."""
+        self.task = None
         self.logger.info('Stop Automated Search')
-        self.stop_behaviour() # Use the inherited failsafe stop
+        self.stop_routine() # Use the inherited failsafe stop
         return
     
 # Only execute if this is the main file, good for testing code

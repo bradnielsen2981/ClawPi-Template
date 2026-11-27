@@ -8,9 +8,10 @@ from .detect_line import LineDetector
 from .detect_colour import ColourDetector
 from .detect_object import ObjectDetector
 from .detect_pose import PoseDetector
+from .detect_face import FaceDetector
 
 # detect_depth (detect_depth.py) is switched off: the ClawPi has no depth camera by default. If one is fitted,
 # add "from .detect_depth import DepthDetector" above, put DepthDetector in this list, and create the camera
 # with CameraInterface(use_depth=True).
-DETECTOR_CLASSES = [LineDetector, ColourDetector, ObjectDetector, PoseDetector]
-DETECTION_TASKS = [cls.name for cls in DETECTOR_CLASSES] # 'detect_line', 'detect_colour', 'detect_object', 'detect_pose'
+DETECTOR_CLASSES = [LineDetector, ColourDetector, ObjectDetector, PoseDetector, FaceDetector]
+DETECTION_TASKS = [cls.name for cls in DETECTOR_CLASSES] # 'detect_line', 'detect_colour', 'detect_object', 'detect_pose', 'detect_face'

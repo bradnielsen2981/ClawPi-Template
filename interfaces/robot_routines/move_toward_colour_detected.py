@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-# A robot behaviour. RobotInterface attaches this function as a method, so `self` is the robot
+# A robot routine. RobotInterface attaches this function as a method, so `self` is the robot
 # and it is called as ROBOT.move_toward_colour_detected(...)
 import time, math
 
-from robot_behaviours import DRIVE_SPEED
+from robot_routines import DRIVE_SPEED
 
 def move_toward_colour_detected(self, colour="red", timelimit=5, mode='turning'):
     """
@@ -20,9 +20,9 @@ def move_toward_colour_detected(self, colour="red", timelimit=5, mode='turning')
     Returns:
         dict: The final detection data snapshot and timestamp.
     """
-    self.behaviour = "move_toward_colour_detected"
+    self.routine = "move_toward_colour_detected"
     data = {
-        'behaviour': self.behaviour,
+        'routine': self.routine,
         'starttime': time.time()
     }
 
@@ -35,7 +35,7 @@ def move_toward_colour_detected(self, colour="red", timelimit=5, mode='turning')
     # How close (in pixels from the bottom of the frame) the object must get before stopping
     distance = 145
 
-    while (time.time() < endtime) and (self.behaviour == "move_toward_colour_detected"):
+    while (time.time() < endtime) and (self.routine == "move_toward_colour_detected"):
         if not self.show_camera_window(): # Acts as our loop throttler
             break
 
@@ -71,7 +71,7 @@ def move_toward_colour_detected(self, colour="red", timelimit=5, mode='turning')
         else:
             self.stop() # lost sight of it, wait for it to reappear
 
-    self.stop_behaviour()
+    self.stop_routine()
     self.CAMERA.end_detection()
     self.set_led_colour()
     data['endtime'] = time.time()

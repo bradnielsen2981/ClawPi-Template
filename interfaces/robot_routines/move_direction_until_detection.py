@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-# A robot behaviour. RobotInterface attaches this function as a method, so `self` is the robot
+# A robot routine. RobotInterface attaches this function as a method, so `self` is the robot
 # and it is called as ROBOT.move_direction_until_detection(...)
 import time
 
-from robot_behaviours import DRIVE_SPEED, TURN_SPEED
+from robot_routines import DRIVE_SPEED, TURN_SPEED
 
 def move_direction_until_detection(self, movetype='forward', distanceto=250, detection_types=None,
                                    detection_colours=None, timelimit=5, confirmlevel=1, target_class='person'):
@@ -29,8 +29,8 @@ def move_direction_until_detection(self, movetype='forward', distanceto=250, det
         detection_colours = ['red']
     detection_types = ['object' if t == 'model' else t for t in detection_types] # 'model' is the old name
 
-    self.behaviour = "move_direction_until_detection"
-    data = {'behaviour': self.behaviour, 'movetype': movetype }
+    self.routine = "move_direction_until_detection"
+    data = {'routine': self.routine, 'movetype': movetype }
     detections = [] # Keeps track of which sensors have tripped
 
     # 1. Setup the camera tasks based on user arguments
@@ -62,7 +62,7 @@ def move_direction_until_detection(self, movetype='forward', distanceto=250, det
     velocity = velocities.get(movetype, (0, 0, 0))
 
     # 3. Enter the active scanning loop
-    while (time.time() < endtime) and (self.behaviour == "move_direction_until_detection"):
+    while (time.time() < endtime) and (self.routine == "move_direction_until_detection"):
         self.set_velocity(*velocity) # resent every loop so the robot keeps moving
         num_detections_processed = 0
         if not self.show_camera_window():
@@ -136,7 +136,7 @@ def move_direction_until_detection(self, movetype='forward', distanceto=250, det
                 if len(detections) == confirmlevel:
                     break
 
-    self.stop_behaviour()
+    self.stop_routine()
     self.CAMERA.end_detection()
     data['endtime'] = time.time()
     return data
