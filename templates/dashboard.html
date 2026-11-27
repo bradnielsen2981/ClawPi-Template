@@ -237,6 +237,20 @@
             </div>
         </div>
 
+        <!-- Live SLAM map: white = free, black = walls, grey = unexplored, green = the robot -->
+        <div id="map_card" class="card">
+            <div class="card-header d-flex align-items-center gap-2">
+                <h2 class="card-title"><i class="fa-solid fa-map-location-dot"></i> SLAM Map</h2>
+                <span id="map_status" class="badge rounded-pill text-bg-secondary ms-auto">off</span>
+                <button id="map_toggle_button" type="button" class="btn btn-sm btn-outline-success" title="Start building a map with the lidar" aria-label="Start mapping">
+                    <i class="fa-solid fa-play" aria-hidden="true"></i> Start
+                </button>
+            </div>
+            <div class="card-body">
+                <div id="mapfeed" class="video-frame map-frame"> </div>
+            </div>
+        </div>
+
         <!-- Sensors -->
         <div id="sensors_card" class="card">
             <div class="card-header d-flex align-items-center">

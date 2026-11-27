@@ -129,3 +129,8 @@
 }
 .line-sensor.on { background: var(--app-accent); border-color: var(--app-accent); }
 .data-chip.chip-low { background: rgba(224, 49, 49, 0.16); border-color: rgba(224, 49, 49, 0.45); }
+
+/* SLAM MAP CARD - a square frame (the map picture is scaled to fit), grey like unexplored map */
+.map-frame { aspect-ratio: 1 / 1; }
+.map-frame::before { content: "Map off"; }
+.map-frame .videofeed { background: #cdcdcd; }

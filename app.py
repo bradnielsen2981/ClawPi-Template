@@ -124,7 +124,7 @@ def look_down():
 def stop():
     app.logger.info('stopping robot')
     if ROBOT:
-        ROBOT.stop_command() # also ends any held dashboard button
+        ROBOT.stop_behaviour() # also ends any held dashboard button
     return jsonify({'message':'stop'})
 
 # DASHBOARD HOLD-DOWN BUTTONS (movement, claw, camera pan/tilt)----------------------------
@@ -180,6 +180,59 @@ def sensor_data():
                     'voltage':robot.get_battery_voltage(timeout=0),
                     'imu':imu and {'rpy':imu['rpy'], 'accel':imu['accel'], 'gyro':imu['gyro']},
                     'line':robot.LINE_FOLLOWER.get_line_data()}) # sensors, on_line, position, junction
+
+# SLAM MAP CARD---------------------------------------------------------------------------
+# A live picture of the lidar SLAM map (see interfaces/mappinginterface.py), streamed like the camera
+MAP_FPS = 2 # map pictures per second sent to the dashboard
+
+def mapstream(robot):
+    """Map streaming generator. Ends when the robot is shut down."""
+    mapping = robot.MAPPING
+    while ROBOT is robot and mapping.status != "Stop":
+        frame = mapping.get_jpeg_map_image(quality=70, size=480)
+        if frame:
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+        time.sleep(1 / MAP_FPS)
+
+@app.route('/mapfeed')
+def mapfeed():
+    """Map streaming route. Put this in the src attribute of an img tag."""
+    robot = ROBOT
+    if not robot:
+        return '', 204
+    response = Response(mapstream(robot), mimetype='multipart/x-mixed-replace; boundary=frame')
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+# Is the SLAM program running? (polled by the dashboard)
+@app.route('/map_status', methods=['GET'])
+def map_status():
+    robot = ROBOT
+    if not robot:
+        return jsonify({'loaded':False})
+    return jsonify({'loaded':True, 'status':robot.MAPPING.status}) # Init, Ready, Mapping, Fail or Stop
+
+# Start SLAM. Waits (up to 30 s) for the first map, so the dashboard shows a spinner meanwhile.
+@app.route('/start_mapping', methods=['POST'])
+def start_mapping():
+    robot = ROBOT
+    if not robot:
+        return jsonify({'message':'robot not loaded'})
+    app.logger.info('start mapping')
+    started = robot.MAPPING.start_mapping()
+    return jsonify({'message':'mapping' if started else 'mapping failed - see logs/map.log',
+                    'status':robot.MAPPING.status})
+
+# Stop SLAM. The last map stays on screen.
+@app.route('/stop_mapping', methods=['POST'])
+def stop_mapping():
+    robot = ROBOT
+    if not robot:
+        return jsonify({'message':'robot not loaded'})
+    app.logger.info('stop mapping')
+    robot.MAPPING.stop_mapping()
+    return jsonify({'message':'mapping stopped', 'status':robot.MAPPING.status})
 
 
 # DASHBOARD CAMERA CONTROLS---------------------------------------------------------------

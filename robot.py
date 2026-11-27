@@ -1,6 +1,6 @@
 # This is where your main robot code resides. It extends from the RobotInterface file.
 # It inherits all the complex camera, sound, and movement functions!
-# The self.command and self.routine variables are important because they keep track of robot states. 
+# The self.behaviour and self.routine variables are important because they keep track of robot states. 
 # Remember: Flask uses Threading (multiple processes running at once, which can confuse the robot if states aren't tracked)
 
 import logging, sys, os, time
@@ -40,7 +40,7 @@ class Robot(RobotInterface):
         """Safely interrupts the automated routine."""
         self.routine = 'ready'
         self.logger.info('Stop Automated Search')
-        self.stop_command() # Use the inherited failsafe stop
+        self.stop_behaviour() # Use the inherited failsafe stop
         return
     
 # Only execute if this is the main file, good for testing code

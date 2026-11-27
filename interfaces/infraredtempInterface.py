@@ -1,6 +1,7 @@
 import smbus
 import time
 
+# Class to interface with the MLX90614 infrared temperature sensor
 class InfraredtempInterface():
 
     MLX90614_RAWIR1=0x04

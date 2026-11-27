@@ -6,6 +6,8 @@ function hide_dashboard()
 {
     dashboard.style.display = "none";
     videofeed.innerHTML = ' ';
+    mapfeed.innerHTML = ' ';
+    show_map_status('off');
     end_hold();
     load_robot_button.style.display = "inline-flex";
     robot_buttons.style.display = "none";
@@ -20,6 +22,7 @@ function show_dashboard()
     // A new address each time: with the same address the browser reuses the picture it already has
     // (the last frame before shutdown) instead of opening a new video stream
     videofeed.innerHTML = '<img src="/videofeed?t=' + Date.now() + '" class="videofeed" alt="Robot camera">';
+    mapfeed.innerHTML = '<img src="/mapfeed?t=' + Date.now() + '" class="videofeed" alt="Live SLAM map">';
     robot_buttons.style.display = "flex";
     shutdown_robot_button.style.display = "inline-flex";
     load_robot_button.style.display = "none";
@@ -265,16 +268,18 @@ stop_detection_button.onclick = function () {
 };
 
 //---DETECTION DATA CARD--------------------------------------------------------------
-var poll_timer = null, sensor_timer = null;
+var poll_timer = null, sensor_timer = null, map_timer = null;
 function start_polling()
 {
     if (!poll_timer) { poll_detection_data(); poll_timer = setInterval(poll_detection_data, 500); }
     if (!sensor_timer) { poll_sensor_data(); sensor_timer = setInterval(poll_sensor_data, 1000); }
+    if (!map_timer) { poll_map_status(); map_timer = setInterval(poll_map_status, 2000); }
 }
 function stop_polling()
 {
     clearInterval(poll_timer); poll_timer = null;
     clearInterval(sensor_timer); sensor_timer = null;
+    clearInterval(map_timer); map_timer = null;
 }
 
 async function poll_detection_data()
@@ -417,6 +422,53 @@ function show_line_follower(line)
     var parts = [chip(where + ' (' + p.toFixed(2) + ')', 'chip-found')];
     if (line.junction) { parts.push(chip('junction', 'chip-gesture')); }
     sensor_line.innerHTML = parts.join(' ');
+}
+
+//---SLAM MAP CARD-------------------------------------------------------------------
+// The map picture is a live stream (/mapfeed). The button starts and stops the SLAM program.
+var map_state = 'off';   // off, starting, mapping, stopping or failed
+function show_map_status(state)
+{
+    map_state = state;
+    var looks = {
+        off:      ['off',        'text-bg-secondary', 'fa-play', 'Start', 'btn-outline-success', 'Start mapping'],
+        starting: ['starting...', 'text-bg-warning',  'fa-spinner fa-spin', 'Start', 'btn-outline-success', 'Starting mapping'],
+        mapping:  ['mapping',    'text-bg-success',   'fa-stop', 'Stop', 'btn-outline-danger', 'Stop mapping'],
+        stopping: ['stopping...', 'text-bg-warning',  'fa-spinner fa-spin', 'Stop', 'btn-outline-danger', 'Stopping mapping'],
+        failed:   ['failed',     'text-bg-danger',    'fa-play', 'Start', 'btn-outline-success', 'Start mapping']
+    }[state];
+    map_status.textContent = looks[0];
+    map_status.className = 'badge rounded-pill ms-auto ' + looks[1];
+    map_toggle_button.innerHTML = '<i class="fa-solid ' + looks[2] + '" aria-hidden="true"></i> ' + looks[3];
+    map_toggle_button.className = 'btn btn-sm ' + looks[4];
+    map_toggle_button.setAttribute('aria-label', looks[5]);
+    map_toggle_button.title = looks[5];
+    map_toggle_button.disabled = (state == 'starting' || state == 'stopping');
+}
+
+map_toggle_button.onclick = async function () {
+    if (robot_loaded != 1 || map_toggle_button.disabled) { return; }
+    if (map_state == 'mapping') {
+        show_map_status('stopping');
+        await post('/stop_mapping', {});
+        show_map_status('off');
+    } else {
+        show_map_status('starting'); // can take up to 30 s while the SLAM program starts
+        var reply = await post('/start_mapping', {});
+        show_map_status(reply.status == 'Mapping' ? 'mapping' : 'failed');
+    }
+};
+
+async function poll_map_status()
+{
+    if (map_state == 'starting' || map_state == 'stopping') { return; } // a change is being sent
+    try {
+        var response = await fetch('/map_status');
+        var reply = await response.json();
+        if (!reply.loaded) { return; }
+        if (reply.status == 'Mapping') { show_map_status('mapping'); }
+        else if (map_state == 'mapping') { show_map_status('off'); }
+    } catch (error) { }
 }
 
 //---START----------------------------------------------------------------------------

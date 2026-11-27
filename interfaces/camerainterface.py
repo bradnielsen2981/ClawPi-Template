@@ -20,7 +20,7 @@ from sensor_msgs.msg import Image
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 from loggerinterface import get_logger
-from detection_tasks import Detector, DETECTOR_CLASSES, DETECTION_TASKS, json_safe
+from camera_detection_tasks import Detector, DETECTOR_CLASSES, DETECTION_TASKS, json_safe
 
 # The ClawPi's USB camera (published by the robot's bringup as 640x480 YUYV at about 15 fps).
 # A MentorPi ascamera depth camera publishes on '/ascamera/camera_publisher/rgb0/image' instead.
@@ -676,7 +676,7 @@ class CameraInterface():
             gestures (list, optional): Names from detection_tasks/detect_pose.py GESTURES, e.g. ['left_arm_up', 'fallen'].
                                        None reports them all.
         """
-        from detection_tasks.detect_pose import GESTURES
+        from camera_detection_tasks.detect_pose import GESTURES
         self.detectors['detect_pose'].watch_gestures = list(GESTURES) if gestures is None else [g for g in gestures if g in GESTURES]
 
     def set_line_detection_colour(self, colour):
