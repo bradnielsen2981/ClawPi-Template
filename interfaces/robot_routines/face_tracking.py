@@ -3,6 +3,8 @@
 # and it is called as ROBOT.face_tracking(...)
 import time
 
+from robot_routines import pause_for_behaviour
+
 # How strongly the camera turns toward the face: degrees moved per pixel the face is off centre, each frame.
 # Bigger = faster but can overshoot and wobble. Roughly 0.1 degrees per pixel would centre it in one step.
 TRACKING_GAIN = 0.04
@@ -28,7 +30,14 @@ def face_tracking(self, timelimit=30, recentre=True):
     endtime = time.time() + timelimit
     last_seen = None # time of the last detection used, so the same frame isn't acted on twice
 
-    while (time.time() < endtime) and (self.routine == "face_tracking"):
+    while time.time() < endtime:
+        if self.routine != "face_tracking": # interrupted by a behaviour, or stopped
+            paused = pause_for_behaviour(self, "face_tracking")
+            if paused is None:
+                break # stopped (e.g. by stop_routine), so end the routine
+            endtime += paused # the pause doesn't count toward the time limit
+            continue
+
         if not self.show_camera_window(): # Acts as our loop throttler
             break
 

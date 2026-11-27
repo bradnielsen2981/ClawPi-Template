@@ -3,7 +3,7 @@
 # and it is called as ROBOT.move_toward_colour_detected(...)
 import time, math
 
-from robot_routines import DRIVE_SPEED
+from robot_routines import DRIVE_SPEED, pause_for_behaviour
 
 def move_toward_colour_detected(self, colour="red", timelimit=5, mode='turning'):
     """
@@ -35,7 +35,14 @@ def move_toward_colour_detected(self, colour="red", timelimit=5, mode='turning')
     # How close (in pixels from the bottom of the frame) the object must get before stopping
     distance = 145
 
-    while (time.time() < endtime) and (self.routine == "move_toward_colour_detected"):
+    while time.time() < endtime:
+        if self.routine != "move_toward_colour_detected": # interrupted by a behaviour, or stopped
+            paused = pause_for_behaviour(self, "move_toward_colour_detected")
+            if paused is None:
+                break # stopped (e.g. by stop_routine), so end the routine
+            endtime += paused # the pause doesn't count toward the time limit
+            continue
+
         if not self.show_camera_window(): # Acts as our loop throttler
             break
 

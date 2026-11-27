@@ -9,7 +9,13 @@ The sensors are numbered left to right as seen from behind the robot:
 
     [0] far left   [1] centre left   [2] centre right   [3] far right
 
-True means that sensor can see the line (a dark line on a light floor).
+True means that sensor can see the line. The sensor itself only tells dark (little infrared reflected) from
+light, so the mode says which one is the line:
+
+    'dark_line'   a dark line on a light floor (the default, e.g. black tape on a white table)
+    'light_line'  a light line on a dark floor (e.g. white tape on a dark mat)
+
+    sensor = LineFollowerInterface(mode='light_line')   # or later: sensor.set_mode('light_line')
 
 Example:
 
@@ -39,6 +45,7 @@ SENSOR_POSITIONS = (-1.0, -1 / 3, 1 / 3, 1.0)  # where each sensor sits, -1 = fa
 # Crossing or T-junction: all four see the line, or three including both centre sensors
 # (Hiwonder's junction patterns from self_driving_line_follower.py)
 JUNCTIONS = ([True, True, True, True], [True, True, True, False], [False, True, True, True])
+MODES = ('dark_line', 'light_line') # what the line looks like (see the top of this file)
 
 
 def line_position(sensors):
@@ -49,14 +56,18 @@ def line_position(sensors):
 
 class LineFollowerInterface():
 
-    def __init__(self, bus=LINE_SENSOR_BUS, address=LINE_SENSOR_ADDRESS):
+    def __init__(self, bus=LINE_SENSOR_BUS, address=LINE_SENSOR_ADDRESS, mode='dark_line'):
         """
         Opens the I2C bus and checks the sensor answers.
 
         Args:
             bus (int, optional): I2C bus number. Defaults to 1 (/dev/i2c-1).
             address (int, optional): The sensor's I2C address. Defaults to 0x78.
+            mode (str, optional): 'dark_line' (dark line on a light floor) or 'light_line' (light line on a
+                                  dark floor). Defaults to 'dark_line'.
         """
+        self.mode = 'dark_line'
+        self.set_mode(mode)
         self.bus_number = bus
         self.address = address
         self.logger = get_logger('LineFollower') # logs/linefollower.log
@@ -80,6 +91,17 @@ class LineFollowerInterface():
             self.logger.error(f"Line follower unavailable: {self.error}")
             self.close()
 
+    def set_mode(self, mode):
+        """
+        Chooses what counts as the line.
+
+        Args:
+            mode (str): 'dark_line' (dark line on a light floor) or 'light_line' (light line on a dark floor).
+        """
+        if mode not in MODES:
+            raise ValueError(f"mode must be one of {MODES}, not {mode!r}")
+        self.mode = mode
+
     def read(self):
         """
         Reads all four sensors.
@@ -99,7 +121,8 @@ class LineFollowerInterface():
                 self._read_failed = True
             return None
         self._read_failed = False
-        self.last_reading = [bool(value & bit) for bit in SENSOR_BITS]
+        dark = [bool(value & bit) for bit in SENSOR_BITS] # the sensor sets a bit when it sees dark
+        self.last_reading = dark if self.mode == 'dark_line' else [not d for d in dark]
         return self.last_reading
 
     def is_on_line(self):
@@ -130,10 +153,10 @@ class LineFollowerInterface():
         Everything in one reading (handy for the dashboard).
 
         Returns:
-            dict: {'available', 'error', 'sensors', 'on_line', 'position', 'junction'}
+            dict: {'available', 'error', 'mode', 'sensors', 'on_line', 'position', 'junction'}
         """
         sensors = self.read()
-        data = {'available': self.available, 'error': self.error, 'sensors': sensors,
+        data = {'available': self.available, 'error': self.error, 'mode': self.mode, 'sensors': sensors,
                 'on_line': None, 'position': None, 'junction': None}
         if sensors is not None:
             position = line_position(sensors)

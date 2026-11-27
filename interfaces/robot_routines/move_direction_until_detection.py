@@ -3,7 +3,7 @@
 # and it is called as ROBOT.move_direction_until_detection(...)
 import time
 
-from robot_routines import DRIVE_SPEED, TURN_SPEED
+from robot_routines import DRIVE_SPEED, TURN_SPEED, pause_for_behaviour
 
 def move_direction_until_detection(self, movetype='forward', distanceto=250, detection_types=None,
                                    detection_colours=None, timelimit=5, confirmlevel=1, target_class='person'):
@@ -62,7 +62,14 @@ def move_direction_until_detection(self, movetype='forward', distanceto=250, det
     velocity = velocities.get(movetype, (0, 0, 0))
 
     # 3. Enter the active scanning loop
-    while (time.time() < endtime) and (self.routine == "move_direction_until_detection"):
+    while time.time() < endtime:
+        if self.routine != "move_direction_until_detection": # interrupted by a behaviour, or stopped
+            paused = pause_for_behaviour(self, "move_direction_until_detection")
+            if paused is None:
+                break # stopped (e.g. by stop_routine), so end the routine
+            endtime += paused # the pause doesn't count toward the time limit
+            continue
+
         self.set_velocity(*velocity) # resent every loop so the robot keeps moving
         num_detections_processed = 0
         if not self.show_camera_window():

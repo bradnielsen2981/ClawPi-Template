@@ -2,6 +2,7 @@
 # container for more advanced functionality
 # use Ctrl + K, Ctrl + 0 to minimise all coding blocks in VSCODE
 import time, sys, os, math, logging, threading
+from contextlib import contextmanager
 import numpy as np
 import cv2
 
@@ -27,6 +28,7 @@ from robot_routines import DRIVE_SPEED, TURN_SPEED
 from robot_routines.move_toward_colour_detected import move_toward_colour_detected
 from robot_routines.move_direction_until_detection import move_direction_until_detection
 from robot_routines.face_tracking import face_tracking
+from robot_behaviours import BEHAVIOURS
 
 # DASHBOARD HOLD CONTROLS -----------------------------------------------------------
 # A dashboard button keeps its action going while it is held: the browser re-sends the action every 0.5 s.
@@ -97,6 +99,9 @@ class RobotInterface(ClawPi):
         and waits for hardware to warm up.
         """
         self.routine = "Ready" # keep track of which routine is running
+        self.behaviours = {}   # behaviours running in the background, by name (see add_behaviour)
+        self._movement_owner = None # the thread that has taken over the wheels (see take_movement_control)
+        self._movement_lock = threading.Lock()
         self._hold = (None, 0)  # (held dashboard action, time it must stop by)
         self._hold_lock = threading.Lock()
         self._hold_quit = threading.Event()
@@ -179,6 +184,75 @@ class RobotInterface(ClawPi):
     def get_line_position(self):
         """Where the line is under the robot: -1.0 far left to 1.0 far right, None if it can't be seen."""
         return self.LINE_FOLLOWER.get_line_position()
+
+    #---MOVEMENT CONTROL----------------------------------------------------------------
+    def set_velocity(self, linear_x=0.0, linear_y=0.0, angular_z=0.0):
+        """
+        Sends a velocity command (see ClawPi.set_velocity), unless a behaviour has taken over the wheels with
+        take_movement_control(): then commands from every other thread are ignored until it hands them back.
+        """
+        owner = self._movement_owner
+        if owner is not None and owner is not threading.current_thread():
+            return
+        super().set_velocity(linear_x, linear_y, angular_z)
+
+    @property
+    def movement_controlled(self):
+        """True while a behaviour has taken over the wheels with take_movement_control()."""
+        return self._movement_owner is not None
+
+    @contextmanager
+    def take_movement_control(self):
+        """
+        Lets the code inside a 'with' block be the only thing that can drive the wheels, e.g. a behaviour
+        backing away from a line while a routine is still trying to drive forward:
+
+            with robot.take_movement_control():
+                robot.move_backward(0.5)
+        """
+        with self._movement_lock: # one behaviour at a time
+            self._movement_owner = threading.current_thread()
+            try:
+                yield
+            finally:
+                self._movement_owner = None
+                self.stop()
+
+    #---BEHAVIOURS (each one lives in its own file in robot_behaviours/)-----------------
+    def add_behaviour(self, name, **settings):
+        """
+        Turns on a behaviour: code that keeps running in the background on its own thread, whatever the robot's
+        task or routine is. None are on by default. Adding one that is already on restarts it with the new settings.
+
+            ROBOT.add_behaviour('stay_within_quadrant', degrees=-90)
+
+        Args:
+            name (str): The behaviour's name (see BEHAVIOURS in robot_behaviours/__init__.py).
+            **settings: The behaviour's settings, e.g. degrees=180 for stay_within_quadrant.
+
+        Returns:
+            Behaviour: The running behaviour.
+        """
+        if name not in BEHAVIOURS:
+            raise ValueError(f"No behaviour called {name!r}. There are: {', '.join(BEHAVIOURS)}")
+        behaviour = BEHAVIOURS[name](self, **settings) # check the settings before stopping an old one
+        self.remove_behaviour(name)
+        self.behaviours[name] = behaviour
+        behaviour.start()
+        return behaviour
+
+    def remove_behaviour(self, name):
+        """Turns off a behaviour. Returns False if it wasn't on."""
+        behaviour = self.behaviours.pop(name, None)
+        if behaviour is None:
+            return False
+        behaviour.stop()
+        return True
+
+    def remove_all_behaviours(self):
+        """Turns off every behaviour."""
+        for name in list(self.behaviours):
+            self.remove_behaviour(name)
 
     def stop_routine(self):
         """
@@ -325,6 +399,7 @@ class RobotInterface(ClawPi):
         and clears the LEDs. Always call this when exiting the script to prevent hardware damage.
         """
         self.routine = "Shutdown"
+        self.remove_all_behaviours() # before anything they use is stopped
         self._hold_quit.set() # end the dashboard safety loop before the ROS connection goes
         self._hold_thread.join(timeout=1.0)
         self.SOUND.stop_listening() # no more voice commands once the robot is shutting down (it can still speak)
