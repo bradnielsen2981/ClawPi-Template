@@ -45,12 +45,25 @@ class Behaviour():
         self._thread.start()
         self.logger.info(f"{self.name} started")
 
-    def stop(self, timeout=2.0):
-        """Asks the behaviour's thread to finish and waits for it (up to timeout seconds)."""
+    def stop(self, timeout=3.0):
+        """
+        Asks the behaviour's thread to finish and waits for it (up to timeout seconds).
+
+        Returns:
+            bool: True if the thread has finished.
+        """
         self._quit.set()
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout)
+            if self._thread.is_alive():
+                return False
         self.logger.info(f"{self.name} stopped")
+        return True
+
+    @property
+    def stopping(self):
+        """True once stop() has been called: a long check() should finish as soon as it sees this."""
+        return self._quit.is_set()
 
     @property
     def running(self):
@@ -63,5 +76,7 @@ class Behaviour():
             try:
                 self.check()
             except Exception as e:
-                self.logger.error(f"{self.name} failed: {e}")
-                self._quit.wait(1.0) # don't flood the log if it keeps failing
+                # A safety behaviour that has stopped working is dangerous, so the whole robot shuts down
+                self._quit.set()
+                self.robot.emergency_shutdown(f"behaviour {self.name} crashed: {e}")
+                return

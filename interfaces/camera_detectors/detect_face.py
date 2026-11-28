@@ -22,7 +22,7 @@ class FaceDetector(Detector):
         self.full_range = False     # False: faces within about 2 m (more reliable). True: up to about 5 m.
 
     def prepare(self):
-        """Loads MediaPipe the first time the task is added."""
+        """Loads MediaPipe the first time the detector is turned on."""
         return self.detector is not None or self.load()
 
     def load(self, confidence=None, full_range=None):

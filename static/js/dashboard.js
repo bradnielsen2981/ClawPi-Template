@@ -34,6 +34,7 @@ function load_robot()
 {
     if (robot_loaded == 0)
     {
+        shutdown_alert.style.setProperty('display', 'none', 'important');
         load_robot_button.style.display = 'none';
         loader.style.display = 'block';
         new_ajax_helper('/load_robot', load_robot_handler);
@@ -187,8 +188,9 @@ move_stop_button.onclick = function () { end_hold(); post('/stop', {}); };
 
 //---DETECTION BUTTONS----------------------------------------------------------------
 // Each detection is a .detect-group: a toggle button plus a dropdown of options (checkboxes or radios).
-var detect_groups = {};    // task -> group element
-var TASK_NAMES = { colour: 'detect_colour', line: 'detect_line', object: 'detect_object', pose: 'detect_pose' };
+var detect_groups = {};    // detector -> group element
+var DETECTOR_NAMES = { colour: 'detect_colour', line: 'detect_line', object: 'detect_object', pose: 'detect_pose',
+                       face: 'detect_face' };
 
 function chosen_options(group)
 {
@@ -223,13 +225,13 @@ function set_busy(group, busy)
 async function send_detection(group, on)
 {
     if (robot_loaded != 1) { return; }
-    var task = group.dataset.task;
+    var detector = group.dataset.detector;
     var options = chosen_options(group);
     set_busy(group, true);
-    var reply = await post('/set_detection', { task: task, on: on ? '1' : '0', options: options.join(',') });
+    var reply = await post('/set_detection', { detector: detector, on: on ? '1' : '0', options: options.join(',') });
     set_busy(group, false);
-    if (reply.tasks) {
-        set_button_state(group, reply.tasks.includes(TASK_NAMES[task]));
+    if (reply.detectors) {
+        set_button_state(group, reply.detectors.includes(DETECTOR_NAMES[detector]));
     } else {
         console.log(reply.message);
     }
@@ -241,7 +243,7 @@ function set_all_detection_buttons_off()
 }
 
 document.querySelectorAll('.detect-group').forEach(function (group) {
-    detect_groups[group.dataset.task] = group;
+    detect_groups[group.dataset.detector] = group;
     set_button_state(group, false);
 
     // The main button turns the detection on or off
@@ -254,7 +256,7 @@ document.querySelectorAll('.detect-group').forEach(function (group) {
         input.addEventListener('change', function () {
             if (input.classList.contains('pose-all')) {
                 group.querySelectorAll('.dropdown-menu input[value]').forEach(function (box) { box.checked = input.checked; });
-            } else if (group.dataset.task === 'pose') {
+            } else if (group.dataset.detector === 'pose') {
                 var boxes = Array.from(group.querySelectorAll('.dropdown-menu input[value]'));
                 group.querySelector('.pose-all').checked = boxes.every(function (box) { return box.checked; });
             }
@@ -292,10 +294,10 @@ async function poll_detection_data()
         // Keep the buttons in step with what the robot is really doing (unless a change is being sent)
         Object.values(detect_groups).forEach(function (group) {
             if (group.dataset.busy !== '1') {
-                set_button_state(group, reply.tasks.includes(TASK_NAMES[group.dataset.task]));
+                set_button_state(group, reply.detectors.includes(DETECTOR_NAMES[group.dataset.detector]));
             }
         });
-        show_detection_data(reply.tasks, reply.data);
+        show_detection_data(reply.detectors, reply.data);
     } catch (error) {
         camera_fps.textContent = 'offline';
     }
@@ -339,6 +341,13 @@ var DESCRIBE = {
             return chip(text, 'chip-found');
         }).join(' ');
     },
+    detect_face: function (data) {
+        var faces = data.faces || [];
+        if (!faces.length) { return nothing(); }
+        return faces.map(function (f) {
+            return chip('face at (' + f.center[0] + ', ' + f.center[1] + ') ' + Math.round(f.score * 100) + '%', 'chip-found');
+        }).join(' ');
+    },
     detect_pose: function (data) {
         var people = data.people || [];
         if (!people.length) { return nothing(); }
@@ -347,19 +356,19 @@ var DESCRIBE = {
         return parts.join(' ');
     },
 };
-var TASK_LABELS = { detect_colour: ['fa-palette', 'Colour'], detect_line: ['fa-route', 'Line'],
+var DETECTOR_LABELS = { detect_colour: ['fa-palette', 'Colour'], detect_line: ['fa-route', 'Line'],
                     detect_object: ['fa-cube', 'Object'], detect_pose: ['fa-person-walking', 'Pose'],
-                    detect_depth: ['fa-layer-group', 'Depth'] };
+                    detect_face: ['fa-face-smile', 'Face'], detect_depth: ['fa-layer-group', 'Depth'] };
 
-function show_detection_data(tasks, data)
+function show_detection_data(detectors, data)
 {
-    if (!tasks.length) {
+    if (!detectors.length) {
         detection_data.innerHTML = '<p class="text-body-secondary mb-0">No detection running.</p>';
     } else {
-        detection_data.innerHTML = tasks.map(function (task) {
-            var label = TASK_LABELS[task] || ['fa-eye', task];
-            var describe = DESCRIBE[task] || function (d) { return escape_html(JSON.stringify(d)); };
-            var body = task in data ? describe(data[task]) : '<span class="text-body-secondary">starting...</span>';
+        detection_data.innerHTML = detectors.map(function (detector) {
+            var label = DETECTOR_LABELS[detector] || ['fa-eye', detector];
+            var describe = DESCRIBE[detector] || function (d) { return escape_html(JSON.stringify(d)); };
+            var body = detector in data ? describe(data[detector]) : '<span class="text-body-secondary">starting...</span>';
             return '<div class="data-row"><span class="data-label"><i class="fa-solid ' + label[0] + ' fa-fw"></i> ' +
                    label[1] + '</span><span class="data-values">' + body + '</span></div>';
         }).join('');
@@ -376,7 +385,18 @@ async function poll_sensor_data()
         var response = await fetch('/sensor_data');
         var reply = await response.json();
         if (reply.loaded) { show_sensor_data(reply); }
+        else if (robot_loaded == 1 && reply.shutdown_reason) { robot_shut_itself_down(reply.shutdown_reason); }
     } catch (error) { }
+}
+
+// The robot shut itself down (e.g. a routine crashed): show why, and offer Load Robot again
+function robot_shut_itself_down(reason)
+{
+    hide_dashboard();
+    set_all_detection_buttons_off();
+    robot_loaded = 0;
+    shutdown_reason.textContent = reason;
+    shutdown_alert.style.setProperty('display', 'flex', 'important');
 }
 
 function show_sensor_data(reply)

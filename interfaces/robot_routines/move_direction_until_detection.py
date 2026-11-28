@@ -1,15 +1,14 @@
 # -*- coding: utf-8 -*-
-# A robot routine. RobotInterface attaches this function as a method, so `self` is the robot
-# and it is called as ROBOT.move_direction_until_detection(...)
+# A robot routine, called as ROBOT.move_direction_until_detection(...). `self` is the robot.
 import time
 
-from robot_routines import DRIVE_SPEED, TURN_SPEED, pause_for_behaviour
+from .routine_tools import pause_for_behaviour
 
 def move_direction_until_detection(self, movetype='forward', distanceto=250, detection_types=None,
                                    detection_colours=None, timelimit=5, confirmlevel=1, target_class='person'):
     """
-    Moves the robot in a continuous pattern until a specific sensor or visual target is triggered.
-    Highly versatile function for autonomous exploration.
+    Moves the robot in a pattern (e.g. forward, turning, sliding) until the lidar, a line, a colour or an object
+    is detected. Highly versatile function for autonomous exploration.
 
     Args:
         movetype (str): How to move ('forward', 'turnright', 'turnleft', 'circleright', 'circleleft', 'slideright', 'slideleft').
@@ -29,121 +28,128 @@ def move_direction_until_detection(self, movetype='forward', distanceto=250, det
         detection_colours = ['red']
     detection_types = ['object' if t == 'model' else t for t in detection_types] # 'model' is the old name
 
-    self.routine = "move_direction_until_detection"
-    data = {'routine': self.routine, 'movetype': movetype }
+    self.set_routine("move_direction_until_detection")
+    data = {'routine': "move_direction_until_detection", 'movetype': movetype}
     detections = [] # Keeps track of which sensors have tripped
+    detectors_before = self.CAMERA.get_detectors() # put back when finished, so other detectors aren't turned off
+    colours_before = self.CAMERA.get_detection_colours()
 
-    # 1. Setup the camera tasks based on user arguments
-    if 'all' in detection_types:
-        self.CAMERA.detect_all()
-    else:
-        if 'line' in detection_types:
-            self.CAMERA.add_detection_task("detect_line")
-        if 'colour' in detection_types:
-            self.CAMERA.add_detection_task('detect_colour')
-            self.CAMERA.set_detection_colours(detection_colours)
-        if 'object' in detection_types:
-            self.CAMERA.load_detection_model()
-            self.CAMERA.add_detection_task("detect_object")
+    try:
+        # 1. Turn on the camera detectors the routine needs
+        if 'all' in detection_types:
+            self.CAMERA.detect_all()
+        else:
+            if 'line' in detection_types:
+                self.CAMERA.add_detector("detect_line")
+            if 'colour' in detection_types:
+                self.CAMERA.add_detector('detect_colour')
+                self.CAMERA.set_detection_colours(detection_colours)
+            if 'object' in detection_types:
+                self.CAMERA.load_detection_model()
+                self.CAMERA.add_detector("detect_object")
 
-    data['starttime'] = time.time()
-    endtime = time.time() + timelimit
+        data['starttime'] = time.time()
+        endtime = time.time() + timelimit
 
-    # 2. Choose the continuous movement pattern: (forward m/s, left m/s, anticlockwise rad/s)
-    velocities = {
-        "forward": (DRIVE_SPEED, 0, 0),
-        "turnright": (0, 0, -TURN_SPEED),
-        "turnleft": (0, 0, TURN_SPEED),
-        "circleright": (DRIVE_SPEED, 0, -TURN_SPEED),
-        "circleleft": (DRIVE_SPEED, 0, TURN_SPEED),
-        "slideright": (0, -DRIVE_SPEED, 0),
-        "slideleft": (0, DRIVE_SPEED, 0),
-    }
-    velocity = velocities.get(movetype, (0, 0, 0))
+        # 2. Choose the continuous movement pattern: (forward m/s, left m/s, anticlockwise rad/s)
+        velocities = {
+            "forward": (self.DRIVE_SPEED, 0, 0),
+            "turnright": (0, 0, -self.TURN_SPEED),
+            "turnleft": (0, 0, self.TURN_SPEED),
+            "circleright": (self.DRIVE_SPEED, 0, -self.TURN_SPEED),
+            "circleleft": (self.DRIVE_SPEED, 0, self.TURN_SPEED),
+            "slideright": (0, -self.DRIVE_SPEED, 0),
+            "slideleft": (0, self.DRIVE_SPEED, 0),
+        }
+        velocity = velocities.get(movetype, (0, 0, 0))
 
-    # 3. Enter the active scanning loop
-    while time.time() < endtime:
-        if self.routine != "move_direction_until_detection": # interrupted by a behaviour, or stopped
-            paused = pause_for_behaviour(self, "move_direction_until_detection")
-            if paused is None:
-                break # stopped (e.g. by stop_routine), so end the routine
-            endtime += paused # the pause doesn't count toward the time limit
-            continue
-
-        self.set_velocity(*velocity) # resent every loop so the robot keeps moving
-        num_detections_processed = 0
-        if not self.show_camera_window():
-            break
-
-        data.update(self.CAMERA.get_detection_data())
-
-        # --- LIDAR CHECK ---
-        if 'lidar' in detection_types or 'all' in detection_types:
-            lidar_distance = self.get_distance_ahead() # metres, inf if nothing in range
-            lidar_cm = None if lidar_distance is None else lidar_distance * 100
-            data['detect_lidar'] = { 'distance': lidar_cm }
-            self.CAMERA.output_message += f" Lidar: {lidar_cm}"
-
-            if lidar_cm is not None and lidar_cm < distanceto:
-                print("Lidar detected!")
-                if 'lidar' not in detections:
-                    detections.append('lidar')
-                    if len(detections) == confirmlevel:
-                        break # Success! Break the while loop
-
-            num_detections_processed += 1
-            if num_detections_processed == len(detection_types):
+        # 3. Enter the active scanning loop
+        while time.time() < endtime:
+            if self.routine != "move_direction_until_detection": # interrupted by a behaviour, or stopped
+                paused = pause_for_behaviour(self, "move_direction_until_detection")
+                if paused is None:
+                    break # stopped (e.g. by stop_routine), so end the routine
+                endtime += paused # the pause doesn't count toward the time limit
                 continue
 
-        # --- LINE CHECK ---
-        if 'line' in detection_types or 'all' in detection_types:
-            # A crossing line is one running across the robot's path
-            crossing = data.get('detect_line', {}).get('crossing')
-            if crossing and (480 - crossing['y'] < distanceto):
-                print("Line detected!")
-                if 'line' not in detections:
-                    detections.append('line')
-                    if len(detections) == confirmlevel:
-                        break
+            self.set_velocity(*velocity) # resent every loop so the robot keeps moving
+            num_detections_processed = 0
+            data.update(self.CAMERA.wait_for_detection()) # waits for the next camera frame
 
-            num_detections_processed += 1
-            if num_detections_processed == len(detection_types):
-                continue
+            # --- LIDAR CHECK ---
+            if 'lidar' in detection_types or 'all' in detection_types:
+                lidar_distance = self.get_distance_ahead() # metres, inf if nothing in range
+                lidar_cm = None if lidar_distance is None else lidar_distance * 100
+                data['detect_lidar'] = { 'distance': lidar_cm }
+                self.CAMERA.output_message += f" Lidar: {lidar_cm}"
 
-        # --- COLOUR CHECK ---
-        if 'colour' in detection_types or 'all' in detection_types:
-            for col in data.get('detect_colour', {}).keys():
-                col_data = data['detect_colour'][col]
-                if col_data.get('found'):
-                    print(f"{col} detected!")
-                    if col not in detections:
-                        detections.append(col)
+                if lidar_cm is not None and lidar_cm < distanceto:
+                    print("Lidar detected!")
+                    if 'lidar' not in detections:
+                        detections.append('lidar')
+                        if len(detections) == confirmlevel:
+                            break # Success! Break the while loop
+
+                num_detections_processed += 1
+                if num_detections_processed == len(detection_types):
+                    continue
+
+            # --- LINE CHECK ---
+            if 'line' in detection_types or 'all' in detection_types:
+                # A crossing line is one running across the robot's path
+                crossing = data.get('detect_line', {}).get('crossing')
+                if crossing and (480 - crossing['y'] < distanceto):
+                    print("Line detected!")
+                    if 'line' not in detections:
+                        detections.append('line')
                         if len(detections) == confirmlevel:
                             break
 
-            if len(detections) == confirmlevel:
-                break
+                num_detections_processed += 1
+                if num_detections_processed == len(detection_types):
+                    continue
 
-            num_detections_processed += 1
-            if num_detections_processed == len(detection_types):
-                continue
-
-        # --- NEURAL NETWORK CHECK ---
-        if 'object' in detection_types or 'all' in detection_types:
-            object_data = data.get('detect_object', {})
-            if object_data.get('found'):
-                for target in object_data['targets']:
-                    if target['class'] == target_class:
-                        if 'object' not in detections:
-                            print(f"{target_class} detected!")
-                            detections.append('object')
+            # --- COLOUR CHECK ---
+            if 'colour' in detection_types or 'all' in detection_types:
+                for col in data.get('detect_colour', {}).keys():
+                    col_data = data['detect_colour'][col]
+                    if col_data.get('found'):
+                        print(f"{col} detected!")
+                        if col not in detections:
+                            detections.append(col)
                             if len(detections) == confirmlevel:
                                 break
 
                 if len(detections) == confirmlevel:
                     break
 
-    self.stop_routine()
-    self.CAMERA.end_detection()
+                num_detections_processed += 1
+                if num_detections_processed == len(detection_types):
+                    continue
+
+            # --- NEURAL NETWORK CHECK ---
+            if 'object' in detection_types or 'all' in detection_types:
+                object_data = data.get('detect_object', {})
+                if object_data.get('found'):
+                    for target in object_data['targets']:
+                        if target['class'] == target_class:
+                            if 'object' not in detections:
+                                print(f"{target_class} detected!")
+                                detections.append('object')
+                                if len(detections) == confirmlevel:
+                                    break
+
+                    if len(detections) == confirmlevel:
+                        break
+
+    except Exception as e:
+        self.emergency_shutdown(f"move_direction_until_detection crashed: {e}")
+        raise
+    finally:
+        # Always runs - finished, stopped or crashed
+        self.CAMERA.set_detectors(detectors_before)
+        self.CAMERA.set_detection_colours(colours_before)
+        self.stop_routine()
+
     data['endtime'] = time.time()
     return data

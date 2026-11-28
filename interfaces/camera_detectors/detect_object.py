@@ -85,7 +85,7 @@ class ObjectDetector(Detector):
         self.model = None
         self.model_name = None
         self.model_path = None
-        self.task = 'detect'        # 'detect' (normal boxes) or 'obb' (rotated boxes)
+        self.model_type = 'detect'  # 'detect' (normal boxes) or 'obb' (rotated boxes), read from the model
         self.labels = []
         self.confidence_level = 0.5
         self.overlap_threshold = 0.45 # Boxes overlapping more than this are merged (non-maximum suppression)
@@ -95,7 +95,7 @@ class ObjectDetector(Detector):
         self._result = None
 
     def prepare(self):
-        """Loads the default model the first time the task is added."""
+        """Loads the default model the first time the detector is turned on."""
         return self.model is not None or self.load()
 
     def load(self, model="yolo26n", size=None, confidence=None):
@@ -134,7 +134,7 @@ class ObjectDetector(Detector):
 
         with self.model_lock:
             self.model, self.model_name, self.model_path = yolo, model, path
-            self.task, self.labels = task or yolo.task, labels
+            self.model_type, self.labels = task or yolo.task, labels
             self.size = model_size or size # An OpenVINO export only works at the size it was exported at
         self._result = None
         self.logger.info(f"YOLO model {model} loaded from {path} at size {self.size} ({len(labels)} classes)")
@@ -151,10 +151,10 @@ class ObjectDetector(Detector):
         camera = self.camera
         last_frame_id = -1
         while camera.status == "Running":
-            with camera.task_lock:
-                active = self.name in camera.detection_tasks
+            with camera.detector_lock:
+                active = self.name in camera.active_detectors
             with self.model_lock:
-                model, labels, task, size = self.model, self.labels, self.task, self.size
+                model, labels, task, size = self.model, self.labels, self.model_type, self.size
             if camera.paused or not active or model is None:
                 time.sleep(0.05)
                 continue

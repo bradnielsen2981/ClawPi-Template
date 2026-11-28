@@ -2,9 +2,9 @@
 #!/usr/bin/env python3
 # Camera interface for the ClawPi's camera (or a Hiwonder ascamera depth camera).
 # Frames come straight from the ROS 2 topics published by the robot's bringup (no video server needed).
-# A background thread runs the requested detection tasks on the newest frame, draws the results and keeps
-# the latest detection data ready for the robot code. Each detection task (line, colour, YOLO26 objects, MediaPipe pose)
-# lives in its own file in detection_tasks/ - add a new one there and it can be used here straight away.
+# A background thread runs the detectors that are on over the newest frame, draws the results and keeps
+# the latest detection data ready for the robot code. Each detector (line, colour, YOLO26 objects, MediaPipe pose,
+# faces) lives in its own file in camera_detectors/ - add a new one there and it can be used here straight away.
 # Run inside the MentorPi container, where ROS 2 is available.
 
 import sys, os, time, threading, json
@@ -20,7 +20,7 @@ from sensor_msgs.msg import Image
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 from loggerinterface import get_logger
-from camera_detection_tasks import Detector, DETECTOR_CLASSES, DETECTION_TASKS, json_safe
+from camera_detectors import Detector, DETECTOR_CLASSES, DETECTOR_NAMES, json_safe
 
 # The ClawPi's USB camera (published by the robot's bringup as 640x480 YUYV at about 15 fps).
 # A MentorPi ascamera depth camera publishes on '/ascamera/camera_publisher/rgb0/image' instead.
@@ -98,7 +98,7 @@ class CameraInterface():
         self.framerate = 0.0
 
         self.detection_data = {}
-        self.detection_tasks = []
+        self.active_detectors = []
         self.detect_once = False
         # Sticky detections: each detection stays in the detection data until detection_data_expire_time seconds
         # after it was last seen, then disappears (stops flickering). Set with set_sticky_detections().
@@ -110,7 +110,7 @@ class CameraInterface():
         self.use_depth = False
         self.depth_display_range = (200, 4000) # Millimetres mapped from red (near) to blue (far) in depth mode
 
-        # One detector per detection task (see detection_tasks/). Their settings live on them, e.g.
+        # Every detector (see camera_detectors/), on or off. Their settings live on them, e.g.
         # CAMERA.detectors['detect_line'].rois or CAMERA.detectors['detect_object'].confidence_level
         self.detectors = {cls.name: cls(self) for cls in DETECTOR_CLASSES}
         self.background_threads = []
@@ -125,7 +125,7 @@ class CameraInterface():
         self.dict_lock = threading.Lock()
         self.frame_lock = threading.Lock()
         self.frame_ready = threading.Condition(self.frame_lock) # Notified every time a new processed frame is ready
-        self.task_lock = threading.Lock()
+        self.detector_lock = threading.Lock()
         self.clear_lock = threading.Lock()
         self._jpeg = None
         self._jpeg_key = None
@@ -204,7 +204,7 @@ class CameraInterface():
     def update(self):
         """
         The core loop executed by the background thread. Waits for each new camera frame, runs the active
-        detection tasks, draws visual overlays and updates the shared data dictionaries safely.
+        detectors, draws visual overlays and updates the shared data dictionaries safely.
         """
         local_detection_data = {}
         framecount = 0
@@ -246,25 +246,25 @@ class CameraInterface():
                         detector.reset()
                     self.clear_temp_detection_data = False
 
-            with self.task_lock:
-                current_tasks = list(self.detection_tasks)
+            with self.detector_lock:
+                current_detectors = list(self.active_detectors)
 
             # Run each active detector (in the order of DETECTOR_CLASSES). None means no result yet.
             for name, detector in self.detectors.items():
-                if name in current_tasks:
+                if name in current_detectors:
                     data = detector.detect(rgb, depth, local_detection_data.get(name, {}), currenttime)
                     if data is not None:
                         local_detection_data[name] = data
 
-            # Remove data for tasks that have been switched off
-            for task in list(local_detection_data):
-                if task not in current_tasks:
-                    del local_detection_data[task]
+            # Remove data for detectors that have been switched off
+            for name in list(local_detection_data):
+                if name not in current_detectors:
+                    del local_detection_data[name]
 
             # Detect once: stop after one full round of results (slow detectors like the model answer later)
-            if self.detect_once and current_tasks and all(t in local_detection_data for t in current_tasks):
-                with self.task_lock:
-                    self.detection_tasks.clear()
+            if self.detect_once and current_detectors and all(t in local_detection_data for t in current_detectors):
+                with self.detector_lock:
+                    self.active_detectors.clear()
                 self.detect_once = False
 
             # Choose the picture to show and draw on
@@ -273,11 +273,11 @@ class CameraInterface():
             else:
                 display = rgb.copy()
 
-            if self.drawing and current_tasks:
+            if self.drawing and current_detectors:
                 self._draw_detections(display, local_detection_data)
 
             if self.output_text:
-                self._draw_text(display, local_detection_data, current_tasks)
+                self._draw_text(display, local_detection_data, current_detectors)
 
             # Update state variables safely. json_safe makes a fresh copy using only JSON types.
             published = json_safe(local_detection_data)
@@ -289,13 +289,13 @@ class CameraInterface():
                 self.frame_ready.notify_all()
 
     #-------------------------------------------
-    # Detection tasks (each one lives in detection_tasks/). These run a detection directly on a frame.
+    # Detectors (each one lives in camera_detectors/). These run a detection directly on a frame.
     def detect_line(self, frame, colour=None):
-        """Line following detection on one frame (see detection_tasks/detect_line.py). Returns (frame, data)."""
+        """Line following detection on one frame (see camera_detectors/detect_line.py). Returns (frame, data)."""
         return self.detectors['detect_line'].detect_line(frame, colour)
 
     def detect_colours(self, frame, colours):
-        """Detects several colours on one frame (see detection_tasks/detect_colour.py). Returns {colour: data}."""
+        """Detects several colours on one frame (see camera_detectors/detect_colour.py). Returns {colour: data}."""
         return self.detectors['detect_colour'].detect_colours(frame, colours)
 
     def detect_color(self, frame, minC, maxC):
@@ -346,7 +346,7 @@ class CameraInterface():
 
     def load_detection_model(self, model="yolo26n", size=None, confidence=None):
         """
-        Loads one of Hiwonder's YOLO26 models for detect_object (see detection_tasks/detect_object.py).
+        Loads one of Hiwonder's YOLO26 models for detect_object (see camera_detectors/detect_object.py).
 
         Args:
             model (str, optional): 'yolo26n' (80 everyday objects - person, cup, chair...), 'best_traffic_26',
@@ -369,14 +369,14 @@ class CameraInterface():
             if name in data:
                 detector.draw(frame, data[name])
 
-    def _draw_text(self, frame, data, tasks):
+    def _draw_text(self, frame, data, detectors):
         """Writes the frame rate and custom message (plus each detector's summary if output_detection_text is on)
         onto the frame in yellow."""
         lines = [f"FPS: {self.framerate}  {self.output_message}".strip()]
         self.output_message = ""
         if self.output_detection_text:
             for name, detector in self.detectors.items():
-                if name in tasks:
+                if name in detectors:
                     lines.append(detector.describe(data.get(name, {})))
         for i, text in enumerate(lines):
             cv2.putText(frame, text, (10, 20 + i * 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
@@ -500,7 +500,7 @@ class CameraInterface():
         Thread-safe method to retrieve the most recent detection data.
 
         Returns:
-            dict: A copy of the detection data, {task name: that detector's data}, e.g.
+            dict: A copy of the detection data, {detector name: that detector's data}, e.g.
                   {'detect_line': {'found': True, 'angle': -8.1, ...}, 'detect_colour': {'red': {...}}}.
                   Only JSON types are used, so it can be passed straight to json.dumps or Flask's jsonify.
         """
@@ -535,47 +535,84 @@ class CameraInterface():
         if expire_time is not None:
             self.detection_data_expire_time = float(expire_time)
 
-    def add_detection_task(self, task, detect_once=False):
+    def add_detector(self, name, detect_once=False):
         """
-        Adds a specific vision task to the active background polling cycle.
+        Turns on a detector, so it runs on every new frame.
 
         Args:
-            task (str): A detection task from detection_tasks/: 'detect_line', 'detect_colour', 'detect_object' or 'detect_pose'.
-            detect_once (bool, optional): If True, removes the tasks after the first round of results. Defaults to False.
+            name (str): A detector from camera_detectors/, e.g. 'detect_line', 'detect_colour', 'detect_object',
+                        'detect_pose' or 'detect_face'.
+            detect_once (bool, optional): If True, the detectors are turned off after the first round of results.
+                                          Defaults to False.
         """
-        if task not in self.detectors:
-            self.logger.warning(f"Unknown detection task {task!r} - must be one of: " + ", ".join(self.detectors))
+        if name not in self.detectors:
+            self.logger.warning(f"Unknown detector {name!r} - must be one of: " + ", ".join(self.detectors))
             return
-        detector = self.detectors[task]
+        detector = self.detectors[name]
         if detector.needs_depth:
             self.enable_depth()
         detector.prepare() # e.g. loads the neural network the first time
 
-        with self.task_lock:
-            if task not in self.detection_tasks:
+        with self.detector_lock:
+            if name not in self.active_detectors:
                 self.detect_once = detect_once
-                self.detection_tasks.append(task)
-                self.logger.info(f"Detection task started: {task}" + (" (once)" if detect_once else ""))
+                self.active_detectors.append(name)
+                self.logger.info(f"Detector started: {name}" + (" (once)" if detect_once else ""))
 
-    def set_detection_tasks(self, tasks=None):
+    def get_detectors(self):
         """
-        Overrides the current list of detection tasks with a new list.
+        The detectors that are on right now, e.g. ['detect_colour', 'detect_face'].
+        A routine can save this when it starts and give it to set_detectors() when it ends, so it puts back
+        what was on before instead of turning off detectors it didn't turn on.
+
+        Returns:
+            list: A copy of the active detector names.
+        """
+        with self.detector_lock:
+            return list(self.active_detectors)
+
+    def set_detectors(self, names=None):
+        """
+        Makes exactly these detectors the ones that are on: the others are turned off. Detectors that are already
+        on stay on (so their detections don't flicker).
 
         Args:
-            tasks (list, optional): List of strings representing new tasks. Defaults to empty list.
+            names (list, optional): Detector names. Defaults to none (all off).
         """
-        self.clear_detection_tasks()
-        for task in tasks or []:
-            self.add_detection_task(task)
+        names = list(names or [])
+        for name in self.get_detectors():
+            if name not in names:
+                self.remove_detector(name)
+        for name in names:
+            self.add_detector(name)
 
-    def clear_detection_tasks(self):
-        """Removes all currently active detection tasks from the polling cycle."""
-        with self.task_lock:
-            self.detection_tasks.clear()
+    def clear_detectors(self):
+        """Turns off every detector."""
+        with self.detector_lock:
+            self.active_detectors.clear()
+
+    def wait_for_detection(self, timeout=0.5):
+        """
+        Waits until the camera has processed its next frame, then returns the newest detection data.
+        Use it to pace a routine's loop: the loop then runs once per new frame and never acts on old data.
+
+        Args:
+            timeout (float, optional): Most seconds to wait. Defaults to 0.5.
+
+        Returns:
+            dict: The detection data (see get_detection_data).
+        """
+        if self.status != "Running":
+            time.sleep(timeout) # no frames are coming, so don't let a loop run flat out
+            return self.get_detection_data()
+        with self.frame_ready:
+            last_frame = self.frame_id
+            self.frame_ready.wait_for(lambda: self.frame_id != last_frame or self.status != "Running", timeout)
+        return self.get_detection_data()
 
     def detect_all(self, exclude_colours=None):
         """
-        Helper method to activate all available detection tasks (lines, colours, objects, and any others in detection_tasks/).
+        Turns on every detector (lines, colours, objects, and any others in camera_detectors/).
 
         Args:
             exclude_colours (list, optional): Colours in the YAML file to ignore. Defaults to ['black', 'white'].
@@ -585,7 +622,7 @@ class CameraInterface():
 
         for name, detector in self.detectors.items():
             if self.use_depth or not detector.needs_depth:
-                self.add_detection_task(name)
+                self.add_detector(name)
 
         self.set_detection_colours([c for c in self.lab_colours if c not in exclude_colours])
 
@@ -606,23 +643,23 @@ class CameraInterface():
         """
         self.output_message = message
 
-    def remove_detection_task(self, task):
+    def remove_detector(self, name):
         """
-        Removes a single specific task from the active task list.
+        Turns off one detector.
 
         Args:
-            task (str): The name of the task to remove.
+            name (str): The detector's name, e.g. 'detect_face'.
         """
-        with self.task_lock:
-            if task in self.detection_tasks:
-                self.detection_tasks.remove(task)
-                self.logger.info(f"Detection task stopped: {task}")
-        if task in self.detectors:
-            self.detectors[task].reset() # So an old result isn't shown when the task is added again
+        with self.detector_lock:
+            if name in self.active_detectors:
+                self.active_detectors.remove(name)
+                self.logger.info(f"Detector stopped: {name}")
+        if name in self.detectors:
+            self.detectors[name].reset() # So an old result isn't shown when the detector is turned on again
 
     def end_detection(self):
-        """Helper method that stops all tasks, wipes active data, and clears target colors simultaneously."""
-        self.clear_detection_tasks()
+        """Turns off every detector, wipes the detection data and clears the colours to look for."""
+        self.clear_detectors()
         self.clear_detection_data()
         self.clear_detection_colours()
 
@@ -645,6 +682,12 @@ class CameraInterface():
         with detector.colours_lock:
             if colour not in detector.colours:
                 detector.colours.append(colour)
+
+    def get_detection_colours(self):
+        """The colours detect_colour is looking for right now (a copy), e.g. ['red', 'green']."""
+        detector = self.detectors['detect_colour']
+        with detector.colours_lock:
+            return list(detector.colours)
 
     def set_detection_colours(self, colourlist=None):
         """
@@ -673,10 +716,10 @@ class CameraInterface():
         Chooses which gestures detect_pose reports (people are always found).
 
         Args:
-            gestures (list, optional): Names from detection_tasks/detect_pose.py GESTURES, e.g. ['left_arm_up', 'fallen'].
+            gestures (list, optional): Names from camera_detectors/detect_pose.py GESTURES, e.g. ['left_arm_up', 'fallen'].
                                        None reports them all.
         """
-        from camera_detection_tasks.detect_pose import GESTURES
+        from camera_detectors.detect_pose import GESTURES
         self.detectors['detect_pose'].watch_gestures = list(GESTURES) if gestures is None else [g for g in gestures if g in GESTURES]
 
     def set_line_detection_colour(self, colour):
@@ -720,7 +763,7 @@ class CameraInterface():
             duration_per_task (int): How long to run each task in seconds. Defaults to 5.
             show_window (bool): Whether to render the OpenCV window. Defaults to True.
         """
-        tasks_to_test = ['baseline'] + DETECTION_TASKS + (['depth_mode'] if self.use_depth else [])
+        tasks_to_test = ['baseline'] + DETECTOR_NAMES + (['depth_mode'] if self.use_depth else [])
 
         # Pre-load dependencies
         self.set_detection_colours(['red', 'green', 'blue'])
@@ -740,8 +783,8 @@ class CameraInterface():
             if abort_test:
                 break
 
-            # Clear previous tasks and data
-            self.clear_detection_tasks()
+            # Clear previous detectors and data
+            self.clear_detectors()
             self.clear_detection_data()
             self.set_mode('rgb')
 
@@ -752,11 +795,11 @@ class CameraInterface():
                 print(f">>> Testing 'Depth mode' for {duration_per_task} seconds...")
                 self.set_mode('depth')
                 if 'detect_depth' in self.detectors:
-                    self.add_detection_task('detect_depth')
+                    self.add_detector('detect_depth')
                 message = "DEPTH MODE"
             else:
                 print(f">>> Testing '{task}' for {duration_per_task} seconds...")
-                self.add_detection_task(task)
+                self.add_detector(task)
                 message = task.upper()
 
             endtime = time.time() + duration_per_task

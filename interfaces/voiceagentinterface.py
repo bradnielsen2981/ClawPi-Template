@@ -28,7 +28,7 @@
 #   ...
 #   VOICE.stop()
 
-import os, sys, re, io, json, time, math, wave, queue, base64, signal, shutil, logging, threading, subprocess, tempfile
+import os, sys, re, io, json, time, math, wave, queue, base64, signal, shutil, inspect, logging, threading, subprocess, tempfile
 from collections import deque
 from datetime import datetime
 
@@ -82,7 +82,9 @@ pan/tilt head and a claw on a lifting arm. People talk to you through your micro
 a speaker, so answer in one or two short, plain sentences with no lists, markdown or emoji.
 When the user asks you to do something, call the matching tool, then say briefly what you did.
 Only call tools for things the user actually asked for. If a request is unsafe or you have no tool for it, say so.
-Positive turn angles are to the left (anticlockwise), negative to the right."""
+Positive turn angles are to the left (anticlockwise), negative to the right.
+Tasks and routines (like automated search or face tracking) keep running after you start them; the stop tool ends them.
+Use the status tool when asked what you are doing."""
 
 NUMBER_WORDS = {'a': 1, 'an': 1, 'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6, 'seven': 7,
                 'eight': 8, 'nine': 9, 'ten': 10, 'half': 0.5, 'twenty': 20, 'thirty': 30, 'forty': 40,
@@ -156,6 +158,37 @@ class MicStream():
 
 #-------------------------------------------
 # The Voice Agent Object
+
+def describe_function(function):
+    """
+    Reads a task or routine's docstring and arguments, for its voice command.
+
+    Returns:
+        tuple: (description, parameters) - the first paragraph of the docstring, and JSON schema properties for
+               the arguments with a number, text or true/false default (others, e.g. lists, are left out).
+    """
+    doc = inspect.getdoc(function) or ''
+    description = ' '.join(doc.split('\n\n')[0].split()) or function.__name__.replace('_', ' ')
+    arg_help = dict(re.findall(r'^\s*(\w+)\s*\([^)]*\):\s*(.+)$', doc, flags=re.MULTILINE))
+    parameters = {}
+    for name, parameter in inspect.signature(function).parameters.items():
+        default = parameter.default
+        if name == 'self' or default is inspect.Parameter.empty:
+            continue
+        if isinstance(default, bool):
+            kind = 'boolean'
+        elif isinstance(default, (int, float)):
+            kind = 'number'
+        elif isinstance(default, str):
+            kind = 'string'
+        else:
+            continue
+        parameters[name] = {'type': kind}
+        if name in arg_help:
+            parameters[name]['description'] = arg_help[name].strip()
+    return description, parameters
+
+
 class VoiceAgentInterface():
 
     def __init__(self, robot=None, name=ROBOT_NAME, api_key=None, volume=None):
@@ -936,6 +969,58 @@ class VoiceAgentInterface():
             return f"Sorry, {name.replace('_', ' ')} didn't work: {e}"
 
     #-------------------------------------------
+    # The robot's tasks and routines as voice commands
+    MAX_VOICE_TIMELIMIT = 60 # seconds: the longest a task or routine started by voice may run
+
+    def add_robot_commands(self, robot):
+        """
+        Makes a voice command for each of the robot's tasks (robot.TASKS, in robot.py) and routines
+        (robot.ROUTINES, in robot_routines/), so "start face tracking" or "start automated search" works.
+        Each command starts the task or routine on its own thread (robot.start_task / robot.start_routine) and
+        answers straight away, so the agent keeps listening and "stop" still works while it runs.
+        The description and settings come from the function's docstring and arguments, so a new task or routine
+        becomes a voice command just by being added to TASKS or ROUTINES.
+        """
+        for kind, names, start in (('task', getattr(robot, 'TASKS', []), robot.start_task),
+                                   ('routine', getattr(robot, 'ROUTINES', []), robot.start_routine)):
+            for name in names:
+                function = getattr(type(robot), name, None)
+                if function is None:
+                    self.logger.warning(f"{kind} {name} is listed but doesn't exist")
+                    continue
+                description, parameters = describe_function(function)
+                spoken = name.replace('_', ' ')
+                self.add_command(name, self._robot_command(name, spoken, start, function),
+                                 f"Start the {kind} '{spoken}': {description} It keeps going until it finishes or "
+                                 f"is stopped.", parameters,
+                                 phrases=[f"{verb} {spoken}" for verb in ('start', 'begin', 'run', 'do')])
+
+    def _robot_command(self, name, spoken, start, function):
+        """The function the voice command for one task or routine runs."""
+        accepts_timelimit = 'timelimit' in inspect.signature(function).parameters
+        default_timelimit = inspect.signature(function).parameters['timelimit'].default if accepts_timelimit else None
+        def command(**settings):
+            if accepts_timelimit: # spoken commands never run for long
+                timelimit = settings.get('timelimit', default_timelimit)
+                timelimit = self.MAX_VOICE_TIMELIMIT if not isinstance(timelimit, (int, float)) else timelimit
+                settings['timelimit'] = min(float(timelimit), self.MAX_VOICE_TIMELIMIT)
+            start(name, when_done=lambda: self.say(f"{spoken.capitalize()} has finished."), **settings)
+            return f"Starting {spoken}."
+        return command
+
+    def _take_over(self):
+        """
+        A spoken action (move, turn, claw...) is a person taking over, so a running task or routine is stopped
+        first. Returns a reason to refuse instead if a behaviour is manoeuvring (it finishes first), else None.
+        """
+        robot = self._need_robot()
+        if getattr(robot, 'movement_controlled', False):
+            return "I'm busy getting out of the way. Try again in a moment."
+        if getattr(robot, 'is_busy', False):
+            robot.stop_task()
+        return None
+
+    #-------------------------------------------
     # Built-in commands (ported from Hiwonder's llm_control tools, using the ClawPi interface)
     def _add_default_commands(self):
         number, string = {'type': 'number'}, {'type': 'string'}
@@ -945,7 +1030,9 @@ class VoiceAgentInterface():
              'seconds': number, 'distance': dict(number, description='metres')})
         self.add_command('turn', self._cmd_turn, "Turn on the spot. Positive degrees turn left, negative right.",
                          {'degrees': number})
-        self.add_command('stop', self._cmd_stop, "Stop moving.")
+        self.add_command('stop', self._cmd_stop, "Stop moving, and stop any task or routine that is running.")
+        self.add_command('status', self._cmd_status, "Say what the robot is doing: its task, routine and behaviours.",
+                         phrases=['what are you doing', 'status'])
         self.add_command('claw', self._cmd_claw, "Open or close the claw (gripper).",
                          {'action': dict(string, enum=['open', 'close'])})
         self.add_command('arm', self._cmd_arm, "Raise or lower the claw's arm.",
@@ -970,6 +1057,9 @@ class VoiceAgentInterface():
 
     def _cmd_move(self, direction='forward', seconds=None, distance=None):
         robot = self._need_robot()
+        refusal = self._take_over()
+        if refusal:
+            return refusal
         speed = getattr(robot, 'default_speed', 0.2)
         if distance:
             seconds = abs(distance) / speed
@@ -982,6 +1072,9 @@ class VoiceAgentInterface():
 
     def _cmd_turn(self, degrees=90):
         robot = self._need_robot()
+        refusal = self._take_over()
+        if refusal:
+            return refusal
         degrees = max(-360.0, min(360.0, float(degrees)))
         try:
             robot.rotate_degrees(degrees)
@@ -992,26 +1085,53 @@ class VoiceAgentInterface():
 
     def _cmd_stop(self):
         robot = self._need_robot()
-        if hasattr(robot, 'stop_routine'):
-            robot.stop_routine()
-        robot.stop()
+        if hasattr(robot, 'stop_task'):
+            robot.stop_task() # the task, the routine, any manoeuvre and the wheels
+        else:
+            robot.stop()
         return "Stopped."
+
+    def _cmd_status(self):
+        robot = self._need_robot()
+        task, routine = getattr(robot, 'task', None), getattr(robot, 'routine', 'Ready')
+        parts = []
+        if task:
+            parts.append(f"I'm doing the task {task.replace('_', ' ')}")
+        if routine not in ('Ready', 'Shutdown', None):
+            parts.append(f"running {routine.replace('_', ' ')}")
+        behaviours = list(getattr(robot, 'behaviours', {}))
+        text = (', '.join(parts) + '.') if parts else "I'm not doing anything right now."
+        if behaviours:
+            text += " My behaviours on are " + ' and '.join(b.replace('_', ' ') for b in behaviours) + "."
+        return text[0].upper() + text[1:]
 
     def _cmd_claw(self, action='open'):
         robot = self._need_robot()
+        refusal = self._take_over()
+        if refusal:
+            return refusal
         robot.open_claw() if action == 'open' else robot.close_claw()
         return f"Claw {'opened' if action == 'open' else 'closed'}."
 
     def _cmd_arm(self, action='raise'):
         robot = self._need_robot()
+        refusal = self._take_over()
+        if refusal:
+            return refusal
         robot.lift_claw() if action == 'raise' else robot.lower_claw()
         return f"Arm {'raised' if action == 'raise' else 'lowered'}."
 
     def _cmd_pick_up(self):
+        refusal = self._take_over()
+        if refusal:
+            return refusal
         self._need_robot().pick_up()
         return "I picked it up."
 
     def _cmd_put_down(self):
+        refusal = self._take_over()
+        if refusal:
+            return refusal
         self._need_robot().put_down()
         return "I put it down."
 

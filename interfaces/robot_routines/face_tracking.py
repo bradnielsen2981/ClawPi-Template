@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
-# A robot routine. RobotInterface attaches this function as a method, so `self` is the robot
-# and it is called as ROBOT.face_tracking(...)
+# A robot routine, called as ROBOT.face_tracking(...). `self` is the robot.
 import time
 
-from robot_routines import pause_for_behaviour
+from .routine_tools import pause_for_behaviour
 
 # How strongly the camera turns toward the face: degrees moved per pixel the face is off centre, each frame.
 # Bigger = faster but can overshoot and wobble. Roughly 0.1 degrees per pixel would centre it in one step.
@@ -23,44 +22,48 @@ def face_tracking(self, timelimit=30, recentre=True):
     Returns:
         dict: The final detection data snapshot and timestamp.
     """
-    self.routine = "face_tracking"
-    data = {'routine': self.routine, 'starttime': time.time()}
+    self.set_routine("face_tracking")
+    data = {'routine': "face_tracking", 'starttime': time.time()}
+    detectors_before = self.CAMERA.get_detectors() # put back when finished, so other detectors aren't turned off
 
-    self.CAMERA.add_detection_task("detect_face")
-    endtime = time.time() + timelimit
-    last_seen = None # time of the last detection used, so the same frame isn't acted on twice
+    try:
+        self.CAMERA.add_detector("detect_face")
+        endtime = time.time() + timelimit
 
-    while time.time() < endtime:
-        if self.routine != "face_tracking": # interrupted by a behaviour, or stopped
-            paused = pause_for_behaviour(self, "face_tracking")
-            if paused is None:
-                break # stopped (e.g. by stop_routine), so end the routine
-            endtime += paused # the pause doesn't count toward the time limit
-            continue
+        while time.time() < endtime:
+            if self.routine != "face_tracking": # interrupted by a behaviour, or stopped
+                paused = pause_for_behaviour(self, "face_tracking")
+                if paused is None:
+                    break # stopped, so end the routine
+                endtime += paused # the pause doesn't count toward the time limit
+                continue
 
-        if not self.show_camera_window(): # Acts as our loop throttler
-            break
+            data.update(self.CAMERA.wait_for_detection()) # waits for the next camera frame
+            face_data = data.get('detect_face', {})
+            if not face_data.get('found'):
+                continue
 
-        data.update(self.CAMERA.get_detection_data())
-        face_data = data.get('detect_face', {})
-        if not face_data.get('found') or face_data.get('time') == last_seen:
-            continue # no face, or no new frame since the last move
-        last_seen = face_data['time']
+            x, y = face_data['largest']['center']
+            width, height = face_data['frame_size']
+            error_x = width / 2 - x  # positive = face is left of centre
+            error_y = height / 2 - y # positive = face is above centre
 
-        x, y = face_data['largest']['center']
-        width, height = face_data['frame_size']
-        error_x = width / 2 - x  # positive = face is left of centre
-        error_y = height / 2 - y # positive = face is above centre
+            # Positive pan turns the camera left and positive tilt turns it up, toward the face
+            pan_step = 0 if abs(error_x) < DEAD_ZONE else max(-MAX_STEP, min(MAX_STEP, error_x * TRACKING_GAIN))
+            tilt_step = 0 if abs(error_y) < DEAD_ZONE else max(-MAX_STEP, min(MAX_STEP, error_y * TRACKING_GAIN))
+            if pan_step or tilt_step:
+                self.point_camera(self.camera_pan + pan_step, self.camera_tilt + tilt_step, duration=0.05)
 
-        # Positive pan turns the camera left and positive tilt turns it up, toward the face
-        pan_step = 0 if abs(error_x) < DEAD_ZONE else max(-MAX_STEP, min(MAX_STEP, error_x * TRACKING_GAIN))
-        tilt_step = 0 if abs(error_y) < DEAD_ZONE else max(-MAX_STEP, min(MAX_STEP, error_y * TRACKING_GAIN))
-        if pan_step or tilt_step:
-            self.point_camera(self.camera_pan + pan_step, self.camera_tilt + tilt_step, duration=0.05)
+        if recentre and self.routine == "face_tracking": # finished normally (not stopped)
+            self.centre_camera_view()
 
-    self.CAMERA.end_detection()
-    if recentre and self.routine == "face_tracking": # not if stopped for shutdown
-        self.centre_camera_view()
-    self.stop_routine()
+    except Exception as e:
+        self.emergency_shutdown(f"face_tracking crashed: {e}")
+        raise
+    finally:
+        # Always runs - finished, stopped or crashed
+        self.CAMERA.set_detectors(detectors_before)
+        self.stop_routine()
+
     data['endtime'] = time.time()
     return data

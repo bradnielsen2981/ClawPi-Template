@@ -32,6 +32,12 @@
     </div>
 </div>
 
+{# Shown if the robot shuts itself down, e.g. because a routine crashed #}
+<div id="shutdown_alert" class="alert alert-danger d-flex gap-2" role="alert" style="display:none !important">
+    <i class="fa-solid fa-triangle-exclamation mt-1"></i>
+    <div><strong>The robot shut itself down.</strong> <span id="shutdown_reason"></span> Load the robot to start again.</div>
+</div>
+
 {# The camera, cards and controls stay hidden until the robot has finished loading #}
 <div id="dashboard" class="row g-4" {% if not robot_loaded %}style="display:none"{% endif %}>
 
@@ -86,7 +92,7 @@
                         <div class="d-flex flex-wrap gap-2">
 
                             <!-- Colour: several colours, one checked per frame -->
-                            <div class="btn-group detect-group" data-task="colour">
+                            <div class="btn-group detect-group" data-detector="colour">
                                 <button type="button" class="btn btn-outline-secondary detect-toggle" title="Turn colour detection on or off" aria-label="Turn colour detection on or off"><i class="fa-solid fa-palette"></i> Detect Colour</button>
                                 <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" title="Choose colour detection options" aria-label="Choose colour detection options">
                                     <span class="visually-hidden">Choose colours</span>
@@ -103,7 +109,7 @@
                             </div>
 
                             <!-- Line: lines and/or intersections -->
-                            <div class="btn-group detect-group" data-task="line">
+                            <div class="btn-group detect-group" data-detector="line">
                                 <button type="button" class="btn btn-outline-secondary detect-toggle" title="Turn line detection on or off" aria-label="Turn line detection on or off"><i class="fa-solid fa-route"></i> Detect Line</button>
                                 <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" title="Choose line detection options" aria-label="Choose line detection options">
                                     <span class="visually-hidden">Choose line options</span>
@@ -116,7 +122,7 @@
                             </div>
 
                             <!-- Object: one YOLO model at a time -->
-                            <div class="btn-group detect-group" data-task="object">
+                            <div class="btn-group detect-group" data-detector="object">
                                 <button type="button" class="btn btn-outline-secondary detect-toggle" title="Turn object detection on or off" aria-label="Turn object detection on or off"><i class="fa-solid fa-cube"></i> Detect Object</button>
                                 <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" title="Choose object detection options" aria-label="Choose object detection options">
                                     <span class="visually-hidden">Choose model</span>
@@ -133,7 +139,7 @@
                             </div>
 
                             <!-- Pose: which gestures to report -->
-                            <div class="btn-group detect-group" data-task="pose">
+                            <div class="btn-group detect-group" data-detector="pose">
                                 <button type="button" class="btn btn-outline-secondary detect-toggle" title="Turn pose detection on or off" aria-label="Turn pose detection on or off"><i class="fa-solid fa-person-walking"></i> Detect Pose</button>
                                 <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" title="Choose pose detection options" aria-label="Choose pose detection options">
                                     <span class="visually-hidden">Choose poses</span>
@@ -146,6 +152,11 @@
                                     <label class="dropdown-item"><input class="form-check-input" type="checkbox" value="{{ value }}" checked> {{ label }}</label>
                                     {% endfor %}
                                 </div>
+                            </div>
+
+                            <!-- Face: no options -->
+                            <div class="btn-group detect-group" data-detector="face">
+                                <button type="button" class="btn btn-outline-secondary detect-toggle" title="Turn face detection on or off" aria-label="Turn face detection on or off"><i class="fa-solid fa-face-smile"></i> Detect Face</button>
                             </div>
 
                             <!-- Depth: no depth camera fitted yet -->

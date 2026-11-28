@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# The detection tasks the CameraInterface can run, one file each.
+# The detectors the CameraInterface can run, one file each.
 # To add a new one: write a Detector subclass in its own file (see base.py) and add it to DETECTOR_CLASSES.
 # The order here is the order they run and are drawn in.
 
@@ -14,4 +14,4 @@ from .detect_face import FaceDetector
 # add "from .detect_depth import DepthDetector" above, put DepthDetector in this list, and create the camera
 # with CameraInterface(use_depth=True).
 DETECTOR_CLASSES = [LineDetector, ColourDetector, ObjectDetector, PoseDetector, FaceDetector]
-DETECTION_TASKS = [cls.name for cls in DETECTOR_CLASSES] # 'detect_line', 'detect_colour', 'detect_object', 'detect_pose', 'detect_face'
+DETECTOR_NAMES = [cls.name for cls in DETECTOR_CLASSES] # 'detect_line', 'detect_colour', 'detect_object', 'detect_pose', 'detect_face'

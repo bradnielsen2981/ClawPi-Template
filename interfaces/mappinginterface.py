@@ -104,7 +104,7 @@ class MappingInterface():
         self.lidar_match_angle = 3.0    # Lidar readings this close (degrees) to an object's edges count as hitting it
         self._tagging_thread = None
         self._tagging = False
-        self._tagging_tasks = []        # Camera tasks started by tagging, removed again when it stops
+        self._tagging_detectors = []        # Camera detectors started by tagging, removed again when it stops
         self._camera_fx, self._camera_fy = DEFAULT_CAMERA_FX, DEFAULT_CAMERA_FY
         self._camera_cx, self._camera_cy = DEFAULT_CAMERA_CX, DEFAULT_CAMERA_CY
         self._lidar_position = None
@@ -297,13 +297,13 @@ class MappingInterface():
             return False
         if self.lidar is None or self.lidar.status != "Running":
             self.logger.warning("No lidar - only objects standing on the floor can be placed on the map")
-        if model and "detect_object" not in self.camera.detection_tasks:
-            self.camera.add_detection_task("detect_object")
-            self._tagging_tasks.append("detect_object")
+        if model and "detect_object" not in self.camera.active_detectors:
+            self.camera.add_detector("detect_object")
+            self._tagging_detectors.append("detect_object")
         if colours:
-            if "detect_colour" not in self.camera.detection_tasks:
-                self.camera.add_detection_task("detect_colour")
-                self._tagging_tasks.append("detect_colour")
+            if "detect_colour" not in self.camera.active_detectors:
+                self.camera.add_detector("detect_colour")
+                self._tagging_detectors.append("detect_colour")
             for colour in colours:
                 self.camera.add_detection_colour(colour)
 
@@ -319,9 +319,9 @@ class MappingInterface():
         if self._tagging_thread and self._tagging_thread is not threading.current_thread():
             self._tagging_thread.join(timeout=2)
         self._tagging_thread = None
-        for task in self._tagging_tasks:
-            self.camera.remove_detection_task(task)
-        self._tagging_tasks.clear()
+        for detector in self._tagging_detectors:
+            self.camera.remove_detector(detector)
+        self._tagging_detectors.clear()
 
     def _tagging_loop(self):
         """

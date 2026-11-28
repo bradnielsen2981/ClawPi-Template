@@ -148,6 +148,9 @@ class ClawPi:
         self.hardware_logger = get_logger('ClawPi') # logs/clawpi.log
         self.default_speed = default_speed
         self.default_turn_speed = default_turn_speed
+        # Counts how many times cancel_motion() has been called. A move records it when it starts and ends early
+        # if it changes, so pressing Stop (on another thread) cuts a move short.
+        self.stop_count = 0
 
         self._owns_rclpy = not rclpy.ok()
         if self._owns_rclpy:
@@ -260,10 +263,11 @@ class ClawPi:
         self._cmd_vel_pub.publish(msg)
 
     def move(self, duration, linear_x=0.0, linear_y=0.0, angular_z=0.0):
-        """Drive with the given velocities for duration seconds, then stop."""
+        """Drive with the given velocities for duration seconds, then stop (sooner if cancel_motion() is called)."""
         end = time.monotonic() + duration
+        stops = self.stop_count
         try:
-            while time.monotonic() < end:
+            while time.monotonic() < end and self.stop_count == stops:
                 self.set_velocity(linear_x, linear_y, angular_z)
                 time.sleep(min(1.0 / CMD_RATE_HZ, max(0.0, end - time.monotonic())))
         finally:
@@ -272,6 +276,11 @@ class ClawPi:
     def stop(self):
         """Stop all wheel motion."""
         self._cmd_vel_pub.publish(Twist())
+
+    def cancel_motion(self):
+        """Stops the wheels and cuts short any move() or rotate_degrees() running on another thread."""
+        self.stop_count += 1
+        ClawPi.stop(self)
 
     def move_forward(self, duration, direction='forward', speed=None):
         """Drive straight for duration seconds.
@@ -319,7 +328,7 @@ class ClawPi:
     def rotate_degrees(self, degrees, speed=None, timeout=10.0):
         """Rotate by an angle using the odometry yaw for feedback.
 
-        Positive degrees = anticlockwise, negative = clockwise.
+        Positive degrees = anticlockwise, negative = clockwise. Ends early if cancel_motion() is called.
         """
         speed = abs(speed if speed is not None else self.default_turn_speed)
         start = self.get_yaw()
@@ -328,8 +337,9 @@ class ClawPi:
         target = math.radians(degrees)
         turned, last = 0.0, start
         end = time.monotonic() + timeout
+        stops = self.stop_count
         try:
-            while abs(turned) < abs(target) and time.monotonic() < end:
+            while abs(turned) < abs(target) and time.monotonic() < end and self.stop_count == stops:
                 remaining = abs(target) - abs(turned)
                 # slow down over the last ~20 degrees to limit overshoot
                 w = max(0.3, min(speed, remaining * 2.0))

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-# The base class every detection task is built on, plus small helpers they share.
-# To make a new detection task: copy one of the detect_*.py files, give the class a new name (e.g.
+# The base class every detector is built on, plus small helpers they share.
+# To make a new detector: copy one of the detect_*.py files, give the class a new name (e.g.
 # 'detect_face'), fill in detect() and draw(), and add the class to DETECTOR_CLASSES in __init__.py.
 
 import math
@@ -75,8 +75,8 @@ def keep_or_expire_items(old_items, new_items, now, expire_time, key):
 #-------------------------------------------
 # The Detector base class
 class Detector():
-    name = None          # Task name used with CameraInterface.add_detection_task, e.g. 'detect_line'
-    needs_depth = False  # True subscribes the camera to the depth picture when the task is added
+    name = None          # Detector name used with CameraInterface.add_detector, e.g. 'detect_line'
+    needs_depth = False  # True subscribes the camera to the depth picture when the detector is turned on
 
     def __init__(self, camera):
         """
@@ -100,7 +100,7 @@ class Detector():
         return result.get('found') and now - result.get('time', now) > max(self.expire_time, 1.0)
 
     def prepare(self):
-        """Called when the task is added, e.g. to load a model. Returns False if the task can't run."""
+        """Called when the detector is turned on, e.g. to load a model. Returns False if it can't run."""
         return True
 
     def detect(self, rgb, depth, previous, now):

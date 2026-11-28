@@ -73,7 +73,7 @@ class PoseDetector(Detector):
         self._gesture_times = {}  # gesture -> when it was last seen, so gestures are sticky
 
     def prepare(self):
-        """Loads the model the first time the task is added."""
+        """Loads the model the first time the detector is turned on."""
         return self.landmarker is not None or self.load()
 
     def load(self, model_path=None, num_poses=None, confidence=None):
@@ -134,8 +134,8 @@ class PoseDetector(Detector):
         camera = self.camera
         last_frame_id = -1
         while camera.status == "Running":
-            with camera.task_lock:
-                active = self.name in camera.detection_tasks
+            with camera.detector_lock:
+                active = self.name in camera.active_detectors
             if camera.paused or not active or self.landmarker is None:
                 time.sleep(0.05)
                 continue

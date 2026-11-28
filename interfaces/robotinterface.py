@@ -1,10 +1,18 @@
 # -*- coding: utf-8 -*-
 # container for more advanced functionality
 # use Ctrl + K, Ctrl + 0 to minimise all coding blocks in VSCODE
+#
+# RobotInterface IS a ClawPi (it inherits the ROS movement, servo, LED and sensor functions) and HAS the other
+# interfaces (CAMERA, LIDAR, LINE_FOLLOWER, SOUND, MAPPING). It also keeps track of what the robot is doing:
+#
+#   self.task      the job the robot is doing, e.g. 'automated_search' (tasks are in robot.py), or None
+#   self.routine   the routine running right now, e.g. 'face_tracking' (routines are in robot_routines/),
+#                  "Ready" when none is, or a behaviour's name while that behaviour has interrupted it
+#
+# Several threads use these (Flask, the voice agent, behaviours, tasks), so READ them freely but only CHANGE them
+# with the methods below (set_task, set_routine, stop_task, stop_routine...), which use self.state_lock.
 import time, sys, os, math, logging, threading
 from contextlib import contextmanager
-import numpy as np
-import cv2
 
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
@@ -16,6 +24,7 @@ from lidarinterface import LidarInterface
 from linefollowerinterface import LineFollowerInterface
 from mappinginterface import MappingInterface
 from loggerinterface import get_logger
+from robot_behaviours import BEHAVIOURS
 
 # RGB values used to show a detection colour on the robot's LEDs
 LED_COLOURS = {
@@ -23,12 +32,9 @@ LED_COLOURS = {
     'yellow': (255, 255, 0), 'white': (255, 255, 255), 'black': (0, 0, 0),
 }
 
-# Speeds used by the movement routines (defined in robot_routines/__init__.py)
-from robot_routines import DRIVE_SPEED, TURN_SPEED
-from robot_routines.move_toward_colour_detected import move_toward_colour_detected
-from robot_routines.move_direction_until_detection import move_direction_until_detection
-from robot_routines.face_tracking import face_tracking
-from robot_behaviours import BEHAVIOURS
+# Speeds used by the dashboard buttons and the routines (routines use self.DRIVE_SPEED and self.TURN_SPEED)
+DRIVE_SPEED = 0.15 # m/s
+TURN_SPEED = 0.5   # rad/s
 
 # DASHBOARD HOLD CONTROLS -----------------------------------------------------------
 # A dashboard button keeps its action going while it is held: the browser re-sends the action every 0.5 s.
@@ -92,13 +98,24 @@ class SilentSound():
     def stop(self): pass
 
 class RobotInterface(ClawPi):
+    DRIVE_SPEED = DRIVE_SPEED
+    TURN_SPEED = TURN_SPEED
+    # The names of the tasks and routines that start_task / start_routine (and the voice agent) can start come from
+    # TASKS in robot.py and ROUTINES in robot_routines/__init__.py.
 
     def __init__(self):
         """
         Initializes the Robot Interface, sets up sound and camera modules,
         and waits for hardware to warm up.
         """
-        self.routine = "Ready" # keep track of which routine is running
+        # What the robot is doing (see the top of this file). Change them only with the methods below.
+        self.task = None
+        self.routine = "Ready"
+        self.state_lock = threading.Lock() # protects self.task, self.routine and the shutdown flags
+        self.is_shutdown = False           # True once shutdown() has started: nothing new can start after that
+        self.shutdown_reason = None        # why emergency_shutdown() shut the robot down
+        self._worker = None                # the thread running a task or routine started with start_task/start_routine
+
         self.behaviours = {}   # behaviours running in the background, by name (see add_behaviour)
         self._movement_owner = None # the thread that has taken over the wheels (see take_movement_control)
         self._movement_lock = threading.Lock()
@@ -106,7 +123,6 @@ class RobotInterface(ClawPi):
         self._hold_lock = threading.Lock()
         self._hold_quit = threading.Event()
         self.camera_pan, self.camera_tilt = 0, 0
-        self.show_camera = False # only turn this on to see the camera window, will slow down performance when using VNC
         self.logger = get_logger('Robot') # logs/robot.log
 
         # Speaker, music and voice commands through the WonderEcho Pro (see voiceagentinterface.py).
@@ -136,6 +152,10 @@ class RobotInterface(ClawPi):
         # Safety loop for the dashboard's hold-down buttons (see hold_action)
         self._hold_thread = threading.Thread(target=self._hold_loop, daemon=True)
         self._hold_thread.start()
+
+        # Let the voice agent start this robot's tasks and routines (see TASKS and ROUTINES)
+        if hasattr(self.SOUND, 'add_robot_commands'):
+            self.SOUND.add_robot_commands(self)
         return
 
     @property
@@ -185,6 +205,142 @@ class RobotInterface(ClawPi):
         """Where the line is under the robot: -1.0 far left to 1.0 far right, None if it can't be seen."""
         return self.LINE_FOLLOWER.get_line_position()
 
+    #---TASK AND ROUTINE STATE------------------------------------------------------------
+    # Every change to self.task and self.routine happens inside "with self.state_lock:", so two threads can never
+    # change them at the same moment (e.g. the dashboard's Stop and a routine resuming after a behaviour).
+    def set_task(self, name):
+        """Marks a task as running. Call it at the top of a task, e.g. self.set_task('automated_search')."""
+        with self.state_lock:
+            if self.is_shutdown:
+                raise RuntimeError("the robot has been shut down")
+            self.task = name
+        self.logger.info(f"Task started: {name}")
+
+    def set_routine(self, name):
+        """Marks a routine as running. Call it at the top of a routine, e.g. self.set_routine('face_tracking')."""
+        with self.state_lock:
+            if self.is_shutdown:
+                raise RuntimeError("the robot has been shut down")
+            self.routine = name
+
+    def stop_task(self):
+        """
+        Stops everything the robot is doing: the task, the routine, any behaviour's manoeuvre and any held
+        dashboard button. The dashboard's Stop button and the voice command "stop" call this.
+        Behaviours stay on, but they only act while the robot is doing something (see is_active).
+        """
+        with self.state_lock:
+            stopped = self.task
+            self.task = None
+        if stopped:
+            self.logger.info(f"Task stopped: {stopped}")
+        self.stop_routine()
+        with self._hold_lock:
+            self._hold = (None, 0) # ends any held dashboard button
+        if not self.is_shutdown:
+            self.cancel_motion() # cuts short a behaviour's reverse-and-turn
+
+    def stop_routine(self):
+        """
+        Ends the current routine (its loop sees self.routine change) and stops the wheels. A routine calls this in
+        its 'finally' block when it finishes. It doesn't end a held dashboard button or cut short a behaviour's
+        manoeuvre - stop_task() does those.
+        """
+        if self.is_shutdown:
+            return # shutdown() has already stopped everything
+        with self.state_lock:
+            self.routine = "Ready"
+        self.stop()
+
+    def interrupt_routine(self, by):
+        """
+        Used by a behaviour that takes over: sets self.routine to the behaviour's name, so the running routine
+        knows it has been interrupted.
+
+        Returns:
+            str: What self.routine was before.
+        """
+        with self.state_lock:
+            if self.is_shutdown:
+                raise RuntimeError("the robot has been shut down")
+            previous = self.routine
+            self.routine = by
+            return previous
+
+    def resume_routine(self, name, by):
+        """
+        Sets self.routine back to name, but ONLY if it is still 'by' (the behaviour that interrupted it).
+        Checking and changing inside one lock means a Stop pressed at the same moment can't be lost.
+
+        Returns:
+            bool: True if the routine was resumed, False if something else changed it first (e.g. Stop).
+        """
+        with self.state_lock:
+            if self.routine != by:
+                return False
+            self.routine = name
+            return True
+
+    @property
+    def is_busy(self):
+        """True while a task or routine is running."""
+        return self.task is not None or self.routine not in ("Ready", "Shutdown")
+
+    @property
+    def is_active(self):
+        """True while the robot is doing something: a task, a routine or a held dashboard drive button.
+        Behaviours only act while it is active, so they never move a robot that has been stopped."""
+        return self.is_busy or self._hold[0] in HOLD_DRIVES
+
+    #---STARTING TASKS AND ROUTINES ON THEIR OWN THREAD---------------------------------
+    # A task or routine is a loop that runs until it is finished. Run straight from a Flask request or the voice
+    # agent, it would block them (the dashboard would freeze and "stop" couldn't be heard), so these run it on a
+    # new thread instead. Only one runs at a time: starting a new one stops the old one first.
+    def start_task(self, name, when_done=None, **settings):
+        """
+        Starts a task (one of TASKS) on its own thread and returns straight away, e.g.
+        ROBOT.start_task('automated_search', timelimit=60).
+
+        Args:
+            name (str): The task's name.
+            when_done (function, optional): Called with no arguments when the task ends.
+            **settings: Passed to the task.
+        """
+        tasks = getattr(self, 'TASKS', [])
+        if name not in tasks:
+            raise ValueError(f"No task called {name!r}. There are: {', '.join(tasks) or 'none'}")
+        return self._start_worker(name, when_done, settings)
+
+    def start_routine(self, name, when_done=None, **settings):
+        """
+        Starts a routine (one of ROUTINES) on its own thread and returns straight away, e.g.
+        ROBOT.start_routine('face_tracking', timelimit=20).
+        """
+        routines = getattr(self, 'ROUTINES', [])
+        if name not in routines:
+            raise ValueError(f"No routine called {name!r}. There are: {', '.join(routines) or 'none'}")
+        return self._start_worker(name, when_done, settings)
+
+    def _start_worker(self, name, when_done, settings):
+        if self.is_shutdown:
+            raise RuntimeError("the robot has been shut down")
+        function = getattr(self, name)
+        self.stop_task() # a new command replaces the current one
+        old = self._worker
+        if old is not None and old.is_alive() and old is not threading.current_thread():
+            old.join(timeout=3) # let the old one finish its clean-up first
+        def run():
+            try:
+                function(**settings)
+            except Exception as e:
+                self.logger.error(f"{name} ended with an error: {e}") # it has already called emergency_shutdown
+            finally:
+                if when_done:
+                    when_done()
+        self._worker = threading.Thread(target=run, name=name, daemon=True)
+        self._worker.start()
+        return self._worker
+
     #---MOVEMENT CONTROL----------------------------------------------------------------
     def set_velocity(self, linear_x=0.0, linear_y=0.0, angular_z=0.0):
         """
@@ -195,6 +351,14 @@ class RobotInterface(ClawPi):
         if owner is not None and owner is not threading.current_thread():
             return
         super().set_velocity(linear_x, linear_y, angular_z)
+
+    def stop(self):
+        """Stops the wheels - unless a behaviour has taken over the wheels (it stops them itself when it is done).
+        To stop the wheels whatever is driving them, use cancel_motion() or stop_task()."""
+        owner = self._movement_owner
+        if owner is not None and owner is not threading.current_thread():
+            return
+        super().stop()
 
     @property
     def movement_controlled(self):
@@ -216,7 +380,8 @@ class RobotInterface(ClawPi):
                 yield
             finally:
                 self._movement_owner = None
-                self.stop()
+                if not self.is_shutdown:
+                    self.stop()
 
     #---BEHAVIOURS (each one lives in its own file in robot_behaviours/)-----------------
     def add_behaviour(self, name, **settings):
@@ -233,6 +398,8 @@ class RobotInterface(ClawPi):
         Returns:
             Behaviour: The running behaviour.
         """
+        if self.is_shutdown:
+            raise RuntimeError("the robot has been shut down")
         if name not in BEHAVIOURS:
             raise ValueError(f"No behaviour called {name!r}. There are: {', '.join(BEHAVIOURS)}")
         behaviour = BEHAVIOURS[name](self, **settings) # check the settings before stopping an old one
@@ -254,29 +421,25 @@ class RobotInterface(ClawPi):
         for name in list(self.behaviours):
             self.remove_behaviour(name)
 
-    def stop_routine(self):
-        """
-        Safely stops the robot's current movement process and resets the routine state.
-        Call this anytime you need to abort a running while-loop instantly.
-        """
-        self.routine = "Ready"
-        with self._hold_lock:
-            self._hold = (None, 0)
-        self.stop()
-        return
-
     #---DASHBOARD HOLD CONTROLS-------------------------------------------------------
     def hold_action(self, action):
         """
         Starts (or keeps going) a dashboard hold-down action, e.g. 'forward', 'camera_up' or 'claw_open'.
         The action stops by itself HOLD_TIMEOUT seconds after the last call, so call this again
         (the dashboard does every 0.5 s) for as long as the button is held, and release_hold() when let go.
+        A person pressing a button takes over: a running task or routine is stopped first. While a behaviour is
+        manoeuvring (e.g. backing off a boundary line) presses are ignored until it has finished.
 
         Returns:
             bool: False if the action isn't known.
         """
-        if action not in HOLD_ACTIONS:
+        if action not in HOLD_ACTIONS or self.is_shutdown:
             return False
+        if self.movement_controlled:
+            return True # a behaviour is manoeuvring (e.g. backing off a line): it finishes first
+        if self.is_busy:
+            self.logger.info(f"Dashboard {action} pressed: stopping {self.task or self.routine}")
+            self.stop_task()
         with self._hold_lock:
             if self._hold[0] != action: # log the press, not every 0.5 s repeat
                 self.logger.info(f"Dashboard hold: {action}")
@@ -291,7 +454,8 @@ class RobotInterface(ClawPi):
             if self._hold[0] is not None:
                 self.logger.info(f"Dashboard release: {self._hold[0]}")
             self._hold = (None, 0)
-        self.stop()
+        if not self.is_shutdown:
+            self.stop()
 
     def _hold_loop(self):
         """Runs in the background: moves whatever is held, and stops it if the dashboard goes quiet."""
@@ -367,55 +531,58 @@ class RobotInterface(ClawPi):
         """
         self.turn_on_led(*LED_COLOURS.get(colour, (0, 0, 0)))
 
-    def show_camera_window(self):
+    #---SHUTDOWN------------------------------------------------------------------------
+    def emergency_shutdown(self, reason):
         """
-        Renders the OpenCV display window.
-        If self.show_camera is False, it implements a small artificial sleep.
-        This is a critical performance fix to prevent headless while-loops from
-        spinning out of control and maxing out the CPU.
+        Shuts the whole robot down because something went wrong, e.g. a routine crashed. Routines, tasks and
+        behaviours call this from their 'except' block. It only runs once, even if several things fail.
 
-        Returns:
-            bool: True normally, False if the user presses 'q' on the keyboard.
+        Args:
+            reason (str): What went wrong. Kept in self.shutdown_reason, so the dashboard can show it.
         """
-        if not self.show_camera:
-            # CRITICAL FIX: Add a small delay to prevent while-loops from running unthrottled
-            time.sleep(0.03)
-            return True
-
-        frame = self.CAMERA.get_frame()
-        cv2.imshow('Detection Mode', frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            return False
-        return True
-
-    #---ROUTINES (each one lives in its own file in robot_routines/)----------------
-    move_toward_colour_detected = move_toward_colour_detected
-    move_direction_until_detection = move_direction_until_detection
-    face_tracking = face_tracking
+        with self.state_lock:
+            if self.is_shutdown:
+                return
+        self.shutdown_reason = reason
+        self.logger.error(f"EMERGENCY SHUTDOWN: {reason}")
+        self.shutdown()
 
     def shutdown(self):
         """
-        Safely powers down all systems. Stops motors, stops the background camera threads,
-        and clears the LEDs. Always call this when exiting the script to prevent hardware damage.
+        Safely powers down all systems: stops behaviours, the task and routine, the motors and the background
+        camera threads, and clears the LEDs. Always call this when exiting the script to prevent hardware damage.
+        Calling it again does nothing.
         """
-        self.routine = "Shutdown"
-        self.remove_all_behaviours() # before anything they use is stopped
+        with self.state_lock:
+            if self.is_shutdown:
+                return
+            self.is_shutdown = True # from now on nothing new can start, and clean-up code knows not to run
+            self.task = None
+            self.routine = "Shutdown"
+        self.logger.info("Shutting down")
+        self.cancel_motion() # any manoeuvre ends within one step
+        # Behaviours first, before anything they use is stopped. Wait for each one properly.
+        for name in list(self.behaviours):
+            behaviour = self.behaviours.pop(name)
+            if not behaviour.stop(timeout=3.0):
+                self.logger.error(f"Behaviour {name} didn't stop within 3 s")
         self._hold_quit.set() # end the dashboard safety loop before the ROS connection goes
-        self._hold_thread.join(timeout=1.0)
+        if self._hold_thread is not threading.current_thread():
+            self._hold_thread.join(timeout=1.0)
         self.SOUND.stop_listening() # no more voice commands once the robot is shutting down (it can still speak)
-        self.stop_routine()
         # Stop in reverse order of creation: mapping uses the lidar and camera, which all use the ROS connection
         if self._mapping is not None:
             self._mapping.stop()
         if self._lidar is not None:
             self._lidar.stop()
+        self.CAMERA.end_detection()
         self.CAMERA.stop()
         self.LINE_FOLLOWER.close()
         self.turn_off_led()
         super().shutdown() # releases the ROS connection
         return
 
-# TEST ROBOT CODE
+# TEST ROBOT CODE (the routines and tasks are tested in robot.py)
 if __name__ == '__main__':
     ROBOT = RobotInterface()
 
@@ -426,10 +593,7 @@ if __name__ == '__main__':
 
         ROBOT.center_camera()
         ROBOT.SOUND.say("Robot ready")
-
-        # Uncomment below to test movements
-        data = ROBOT.move_direction_until_detection(movetype='forward', distanceto=50, detection_types=['lidar','colour'], confirmlevel=2, detection_colours=['red'], timelimit=10)
-        print(data)
+        print("Line follower:", ROBOT.get_line_sensors())
 
     except KeyboardInterrupt:
         # Failsafe if you cancel the script mid-movement!

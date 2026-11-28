@@ -22,6 +22,17 @@ app.config['SECRET_KEY'] = "ClawPi2026"
 #---EMBED OBJECTS---------------------------------------------------
 DATABASE = Database("databases/test.db") # logs to logs/database.log
 ROBOT = None
+SHUTDOWN_REASON = None # why the robot last shut itself down (e.g. a routine crashed), shown on the dashboard
+
+# Before every request: if the robot has shut itself down (see RobotInterface.emergency_shutdown), forget it,
+# so every route below treats it as not loaded and Load Robot makes a new one.
+@app.before_request
+def forget_shut_down_robot():
+    global ROBOT, SHUTDOWN_REASON
+    robot = ROBOT
+    if robot is not None and robot.is_shutdown:
+        SHUTDOWN_REASON = robot.shutdown_reason
+        ROBOT = None
 
 #---ONE USER AT A TIME-----------------------------------------------
 # Only one browser can be logged in. The logged in browser holds ACTIVE_USER['token'].
@@ -101,9 +112,10 @@ def dashboard():
 # load the robot
 @app.route('/load_robot', methods=['GET','POST'])
 def load_robot():
-    global ROBOT
+    global ROBOT, SHUTDOWN_REASON
     if not ROBOT:
         app.logger.info('Loading Robot')
+        SHUTDOWN_REASON = None
         ROBOT = Robot(DATABASE)
         time.sleep(3) #takes 3 seconds to load the robot
         #ROBOT.SOUND.say("Hello my name is Wally")
@@ -119,13 +131,22 @@ def look_down():
         pass #ROBOT.SOUND.say("Looking Down")
     return jsonify({'message':'look down'})
 
-# Stop
+# Stop: ends the task, the routine, any behaviour's manoeuvre and any held dashboard button
 @app.route('/stop', methods=['GET','POST'])
 def stop():
     app.logger.info('stopping robot')
     if ROBOT:
-        ROBOT.stop_routine() # also ends any held dashboard button
+        ROBOT.stop_task()
     return jsonify({'message':'stop'})
+
+# Start the automated search task (robot.py). start_task runs it on its own thread, so this request returns
+# straight away and the dashboard's Stop button still works while it runs.
+@app.route('/start_automated_search', methods=['GET','POST'])
+def start_automated_search():
+    if not ROBOT:
+        return jsonify({'message':'robot not loaded'})
+    ROBOT.start_task('automated_search')
+    return jsonify({'message':'automated search started'})
 
 # DASHBOARD HOLD-DOWN BUTTONS (movement, claw, camera pan/tilt)----------------------------
 # The dashboard sends /hold every 0.5 s while a button is held and /release when it is let go.
@@ -174,12 +195,13 @@ def release():
 def sensor_data():
     robot = ROBOT
     if not robot:
-        return jsonify({'loaded':False})
+        return jsonify({'loaded':False, 'shutdown_reason':SHUTDOWN_REASON})
     imu = robot.get_imu_sensor(timeout=0) # timeout=0: use the latest reading, don't wait
     return jsonify({'loaded':True,
                     'voltage':robot.get_battery_voltage(timeout=0),
                     'imu':imu and {'rpy':imu['rpy'], 'accel':imu['accel'], 'gyro':imu['gyro']},
-                    'line':robot.LINE_FOLLOWER.get_line_data()}) # sensors, on_line, position, junction
+                    'line':robot.LINE_FOLLOWER.get_line_data(), # sensors, on_line, position, junction
+                    'task':robot.task, 'routine':robot.routine, 'behaviours':list(robot.behaviours)})
 
 # SLAM MAP CARD---------------------------------------------------------------------------
 # A live picture of the lidar SLAM map (see interfaces/mappinginterface.py), streamed like the camera
@@ -237,7 +259,7 @@ def stop_mapping():
 
 # DASHBOARD CAMERA CONTROLS---------------------------------------------------------------
 
-# Models the dashboard's Detect Object menu can load (see interfaces/detection_tasks/detect_object.py)
+# Models the dashboard's Detect Object menu can load (see interfaces/camera_detectors/detect_object.py)
 OBJECT_MODELS = ['yolo26n', 'best_traffic_26', 'best_garbage_26', 'best_FourLineFollowing']
 
 # Point the camera straight ahead (pan and tilt are hold-down buttons, see /hold)
@@ -248,49 +270,50 @@ def camera_centre():
     pan, tilt = ROBOT.centre_camera_view()
     return jsonify({'message':'camera centred', 'pan':pan, 'tilt':tilt})
 
-# Turn one detection task on or off. Form fields:
-#   task    - colour, line, object or pose
-#   on      - 1 to turn on (or update the options), 0 to turn off
-#   options - comma separated: colours (red,green), line parts (line,crossing),
+# Turn one detector on or off. Form fields:
+#   detector - colour, line, object, pose or face
+#   on       - 1 to turn on (or update the options), 0 to turn off
+#   options  - comma separated: colours (red,green), line parts (line,crossing),
 #             a model name (yolo26n) or gestures (left_arm_up,fallen)
 @app.route('/set_detection', methods=['POST'])
 def set_detection():
     if not ROBOT:
         return jsonify({'message':'robot not loaded'})
     camera = ROBOT.CAMERA
-    task = request.form.get('task', '')
+    detector = request.form.get('detector', '')
     on = request.form.get('on') == '1'
     options = [o for o in request.form.get('options', '').split(',') if o]
-    names = {'colour':'detect_colour', 'line':'detect_line', 'object':'detect_object', 'pose':'detect_pose'}
-    if task not in names:
-        return jsonify({'message':'unknown task'}), 400
+    names = {'colour':'detect_colour', 'line':'detect_line', 'object':'detect_object', 'pose':'detect_pose',
+             'face':'detect_face'}
+    if detector not in names:
+        return jsonify({'message':'unknown detector'}), 400
 
-    if on and task == 'colour':
+    if on and detector == 'colour':
         options = [c for c in options if c in camera.lab_colours]
         camera.set_detection_colours(options)
-    elif on and task == 'line':
+    elif on and detector == 'line':
         camera.set_line_detection_options(lines='line' in options, crossings='crossing' in options)
-    elif on and task == 'object':
+    elif on and detector == 'object':
         model = options[0] if options and options[0] in OBJECT_MODELS else 'yolo26n'
         if not camera.load_detection_model(model): # takes a few seconds the first time
             return jsonify({'message':f'could not load {model}'}), 500
-    elif on and task == 'pose':
+    elif on and detector == 'pose':
         camera.set_pose_gestures(options)
 
-    if on and (options or task == 'pose'): # pose with no gestures still finds people
-        camera.add_detection_task(names[task])
+    if on and (options or detector in ('pose', 'face')): # pose with no gestures still finds people; face has no options
+        camera.add_detector(names[detector])
     else:
-        camera.remove_detection_task(names[task])
-    app.logger.info(f'detection {task} {"on" if on else "off"} {options}')
-    return jsonify({'message':'detection updated', 'tasks':camera.detection_tasks})
+        camera.remove_detector(names[detector])
+    app.logger.info(f'detection {detector} {"on" if on else "off"} {options}')
+    return jsonify({'message':'detection updated', 'detectors':camera.get_detectors()})
 
-# The latest camera detection data, frame rate and active tasks (polled by the dashboard)
+# The latest camera detection data, frame rate and active detectors (polled by the dashboard)
 @app.route('/detection_data', methods=['GET'])
 def detection_data():
     if not ROBOT:
         return jsonify({'loaded':False})
     camera = ROBOT.CAMERA
-    return jsonify({'loaded':True, 'fps':camera.framerate, 'tasks':list(camera.detection_tasks),
+    return jsonify({'loaded':True, 'fps':camera.framerate, 'detectors':camera.get_detectors(),
                     'data':camera.get_detection_data()})
 
 # CAMERA CODE-(do not touch this!!)-------------------------------------------------------
